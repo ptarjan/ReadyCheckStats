@@ -511,7 +511,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
         local slow = {}
         for name, t in pairs(responseTimes) do
             if t > 5 then
-                table.insert(slow, string.format("%s (%.1fs)", name, t))
+                table.insert(slow, { name = name, time = t })
             end
         end
 
@@ -550,9 +550,11 @@ frame:SetScript("OnEvent", function(self, event, ...)
             end
         end
         if #slow > 0 and #shamed == 0 then
-            table.sort(slow, function(a, b) return a > b end) -- slowest first
+            table.sort(slow, function(a, b) return a.time > b.time end) -- slowest first
             local top = {}
-            for i = 1, math.min(3, #slow) do top[i] = slow[i] end
+            for i = 1, math.min(3, #slow) do
+                top[i] = string.format("%s (%.1fs)", slow[i].name, slow[i].time)
+            end
             Print("Slowest: " .. table.concat(top, ", "))
         end
 
