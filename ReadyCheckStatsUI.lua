@@ -26,7 +26,9 @@ end
 
 local function FormatTime(seconds)
     if not seconds or seconds <= 0 then return "-" end
-    if seconds >= 60 then
+    if seconds >= 3600 then
+        return string.format("%.1fh", seconds / 3600)
+    elseif seconds >= 60 then
         return string.format("%.1fm", seconds / 60)
     end
     return string.format("%.0fs", seconds)
@@ -69,25 +71,30 @@ local MEDAL_LABELS = { "#1", "#2", "#3" }
 -- Data helpers (mirror the core logic so we don't require exports)
 --------------------------------------------------------------------------------
 
-local function BuildEntries(playerTable)
+local function BuildEntries(playerTable, groupFilter)
     if not playerTable then return {} end
     local entries = {}
     for name, data in pairs(playerTable) do
         if data and data.seen and data.seen > 0 then
-            local failures = (data.notready or 0) + (data.afk or 0)
-            local avgTime = 0
-            if data.responseCount and data.responseCount > 0 then
-                avgTime = data.totalResponseTime / data.responseCount
+            -- Apply group filter if set
+            if groupFilter and data.groups and not data.groups[groupFilter] then
+                -- skip: player not in this group
+            else
+                local failures = (data.notready or 0) + (data.afk or 0)
+                local avgTime = 0
+                if data.responseCount and data.responseCount > 0 then
+                    avgTime = data.totalResponseTime / data.responseCount
+                end
+                table.insert(entries, {
+                    name     = name,
+                    seen     = data.seen,
+                    notready = data.notready or 0,
+                    afk      = data.afk or 0,
+                    failures = failures,
+                    avgTime  = avgTime,
+                    timeWasted = data.timeWasted or 0,
+                })
             end
-            table.insert(entries, {
-                name     = name,
-                seen     = data.seen,
-                notready = data.notready or 0,
-                afk      = data.afk or 0,
-                failures = failures,
-                avgTime  = avgTime,
-                timeWasted = data.timeWasted or 0,
-            })
         end
     end
     table.sort(entries, function(a, b)
@@ -95,6 +102,24 @@ local function BuildEntries(playerTable)
         return a.avgTime > b.avgTime
     end)
     return entries
+end
+
+local function GetAllGroups(playerTable)
+    local groups = {}
+    if not playerTable then return groups end
+    for _, data in pairs(playerTable) do
+        if data.groups then
+            for g in pairs(data.groups) do
+                groups[g] = true
+            end
+        end
+    end
+    local sorted = {}
+    for g in pairs(groups) do
+        table.insert(sorted, g)
+    end
+    table.sort(sorted)
+    return sorted
 end
 
 local function SummarizeNight(nightData)
@@ -254,6 +279,7 @@ end
 
 local TAB_NAMES = { "Tonight", "All-Time", "Trends" }
 local activeTab = 1
+local alltimeGroupFilter = nil -- nil = all groups
 
 local function CreateTabs(parent)
     local tabs = {}
@@ -475,13 +501,13 @@ local PLAYER_COLS = {
     { label = "NR",         x = 180, width = 30,  justify = "LEFT",  sortKey = "notready" },
     { label = "AFK",        x = 220, width = 30,  justify = "LEFT",  sortKey = "afk" },
     { label = "Avg",        x = 260, width = 50,  justify = "LEFT",  sortKey = "avgTime" },
-    { label = "Wasted",     x = 320, width = 60,  justify = "LEFT",  sortKey = "timeWasted" },
+    { label = "Wasted",     x = 320, width = 70,  justify = "LEFT",  sortKey = "timeWasted" },
     { label = "Fail %",     x = 400, width = 55,  justify = "LEFT",  sortKey = "failures" },
 }
 
-local function PopulatePlayerList(parent, entries)
+local function PopulatePlayerList(parent, entries, yOffset)
     local sc = parent.scrollChild
-    local y = 0
+    local y = yOffset or 0
 
     -- Sort entries by current sort key
     SortEntries(entries, currentSortKey, currentSortAsc)
@@ -550,7 +576,7 @@ local TREND_COLS = {
     { label = "Checks",    x = 194, width = 45,  justify = "RIGHT" },
     { label = "Perfect %", x = 250, width = 55,  justify = "RIGHT" },
     { label = "Avg",       x = 312, width = 45,  justify = "RIGHT" },
-    { label = "Wasted",    x = 364, width = 50,  justify = "RIGHT" },
+    { label = "Wasted",    x = 364, width = 70,  justify = "RIGHT" },
 }
 
 local function PopulateTrends(parent)
@@ -643,8 +669,8 @@ local function PopulateTrends(parent)
 
         -- Wasted
         local wastedFs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        wastedFs:SetPoint("RIGHT", row, "LEFT", 414, 0)
-        wastedFs:SetWidth(50)
+        wastedFs:SetPoint("RIGHT", row, "LEFT", 434, 0)
+        wastedFs:SetWidth(70)
         wastedFs:SetJustifyH("RIGHT")
         wastedFs:SetText(FormatTime(h.timeWasted))
         wastedFs:SetTextColor(0.8, 0.6, 0.4)
@@ -657,25 +683,26 @@ local function PopulateTrends(parent)
         local prev = all[#all - 1]
         local curr = all[#all]
         local diff = (curr.perfectRate or 0) - (prev.perfectRate or 0)
-        local timeDiff = (curr.avgTime or 0) - (prev.avgTime or 0)
+        local wastedDiff = (curr.timeWasted or 0) - (prev.timeWasted or 0)
 
         y = y + 6
-        if math.abs(diff) > 0.5 or math.abs(timeDiff) > 0.5 then
+        if math.abs(diff) >= 0.5 or math.abs(wastedDiff) >= 60 then
             local trendFs = sc:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
             trendFs:SetPoint("TOPLEFT", sc, "TOPLEFT", 6, -y)
             trendFs:SetWidth(SCROLL_WIDTH - 12)
             trendFs:SetJustifyH("LEFT")
 
             local parts = {}
-            if diff > 0 then
+            if diff >= 0.5 then
                 table.insert(parts, string.format("|cff00ff00Trending up! +%.0f%% perfect rate|r", diff))
-            elseif diff < 0 then
+            elseif diff <= -0.5 then
                 table.insert(parts, string.format("|cffff0000Trending down... %.0f%% perfect rate|r", diff))
             end
-            if timeDiff < -0.5 then
-                table.insert(parts, string.format("|cff00ff00Getting faster! %.1fs quicker|r", -timeDiff))
-            elseif timeDiff > 0.5 then
-                table.insert(parts, string.format("|cffff0000Getting slower... %.1fs slower|r", timeDiff))
+            local wastedDiff = (curr.timeWasted or 0) - (prev.timeWasted or 0)
+            if wastedDiff < -60 then
+                table.insert(parts, string.format("|cff00ff00Less time wasted! %.1fm saved|r", -wastedDiff / 60))
+            elseif wastedDiff > 60 then
+                table.insert(parts, string.format("|cffff0000More time wasted... %.1fm more|r", wastedDiff / 60))
             end
             trendFs:SetText(table.concat(parts, "  "))
             y = y + 18
@@ -749,10 +776,67 @@ local function Refresh(parent)
         parent.titleText:SetText("ReadyCheckStats — Tonight (" .. dateStr .. groupStr .. ")")
 
     elseif activeTab == 2 then
-        -- All-Time
-        entries = BuildEntries(db.alltime or {})
-        PopulatePlayerList(parent, entries)
-        parent.titleText:SetText("ReadyCheckStats — All-Time")
+        -- All-Time with group filter
+        local sc = parent.scrollChild
+        local groups = GetAllGroups(db.alltime or {})
+        if #groups > 0 then
+            local y = 0
+            local filterRow = CreateFrame("Frame", nil, sc)
+            filterRow:SetSize(SCROLL_WIDTH, 22)
+            filterRow:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -y)
+
+            local lbl = filterRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            lbl:SetPoint("LEFT", filterRow, "LEFT", 8, 0)
+            lbl:SetText("Group:")
+            lbl:SetTextColor(0.7, 0.7, 0.7)
+
+            local xOff = 50
+            -- "All" button
+            local allBtn = CreateFrame("Button", nil, filterRow, "BackdropTemplate")
+            allBtn:SetSize(40, 18)
+            allBtn:SetPoint("LEFT", filterRow, "LEFT", xOff, 0)
+            if not alltimeGroupFilter then
+                ApplyBackdrop(allBtn, 0.1, 0.3, 0.5, 1, 0, 0.6, 1, 1)
+            else
+                ApplyBackdrop(allBtn, 0.2, 0.2, 0.2, 1, 0.4, 0.4, 0.4, 1)
+            end
+            local allText = allBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            allText:SetPoint("CENTER")
+            allText:SetText("All")
+            allText:SetTextColor(alltimeGroupFilter and 0.6 or 1, alltimeGroupFilter and 0.6 or 1, alltimeGroupFilter and 0.6 or 1)
+            allBtn:SetScript("OnClick", function()
+                alltimeGroupFilter = nil
+                parent:Refresh()
+            end)
+            xOff = xOff + 44
+
+            for _, g in ipairs(groups) do
+                local btn = CreateFrame("Button", nil, filterRow, "BackdropTemplate")
+                local bw = math.max(40, g:len() * 7 + 10)
+                btn:SetSize(bw, 18)
+                btn:SetPoint("LEFT", filterRow, "LEFT", xOff, 0)
+                local isActive = alltimeGroupFilter == g
+                if isActive then
+                    ApplyBackdrop(btn, 0.1, 0.3, 0.5, 1, 0, 0.6, 1, 1)
+                else
+                    ApplyBackdrop(btn, 0.2, 0.2, 0.2, 1, 0.4, 0.4, 0.4, 1)
+                end
+                local btnText = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                btnText:SetPoint("CENTER")
+                btnText:SetText(g)
+                btnText:SetTextColor(isActive and 1 or 0.6, isActive and 1 or 0.6, isActive and 1 or 0.6)
+                btn:SetScript("OnClick", function()
+                    alltimeGroupFilter = g
+                    parent:Refresh()
+                end)
+                xOff = xOff + bw + 4
+            end
+        end
+
+        entries = BuildEntries(db.alltime or {}, alltimeGroupFilter)
+        PopulatePlayerList(parent, entries, #groups > 0 and 24 or 0)
+        local titleSuffix = alltimeGroupFilter and (" — " .. alltimeGroupFilter) or ""
+        parent.titleText:SetText("ReadyCheckStats — All-Time" .. titleSuffix)
 
     elseif activeTab == 3 then
         -- Trends
@@ -826,7 +910,7 @@ local originalHandler = SlashCmdList["READYCHECKSTATS"]
 
 SlashCmdList["READYCHECKSTATS"] = function(msg)
     local trimmed = strtrim(msg):lower()
-    if trimmed == "ui" then
+    if trimmed == "" or trimmed == "ui" then
         ToggleUI()
         return
     end

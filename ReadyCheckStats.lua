@@ -76,7 +76,21 @@ local function DetectGroupLabel()
         end
     end
 
-    -- Return the most common guild
+    -- Prefer player's own guild if it has a meaningful presence (at least 20% of counted members)
+    local playerGuild = GetGuildInfo("player")
+    playerGuild = SafeValue(playerGuild)
+    local totalCounted = 0
+    for _, count in pairs(guilds) do
+        totalCounted = totalCounted + count
+    end
+
+    if playerGuild and guilds[playerGuild] and totalCounted > 0 then
+        if guilds[playerGuild] / totalCounted >= 0.2 then
+            return playerGuild
+        end
+    end
+
+    -- Otherwise return the most common guild
     local best, bestCount = nil, 0
     for guild, count in pairs(guilds) do
         if count > bestCount then
@@ -155,6 +169,29 @@ local function InitDB()
         ArchiveTonight()
         ReadyCheckShameDB.tonight = { date = Today(), players = {} }
     end
+
+    -- Backfill group tags from history and tonight
+    for _, h in ipairs(ReadyCheckShameDB.history) do
+        if h.group and h.playerNames then
+            for _, name in ipairs(h.playerNames) do
+                local d = ReadyCheckShameDB.alltime[name]
+                if d then
+                    if not d.groups then d.groups = {} end
+                    d.groups[h.group] = true
+                end
+            end
+        end
+    end
+    local group = ReadyCheckShameDB.tonight.group
+    if group then
+        for name in pairs(ReadyCheckShameDB.tonight.players) do
+            local d = ReadyCheckShameDB.alltime[name]
+            if d then
+                if not d.groups then d.groups = {} end
+                d.groups[group] = true
+            end
+        end
+    end
 end
 
 local function SummarizeNight(nightData)
@@ -191,6 +228,12 @@ function ArchiveTonight()
     if not hasData then return end
 
     local summary = SummarizeNight(tonight)
+    -- Store player names for group tagging backfill
+    local names = {}
+    for name in pairs(tonight.players) do
+        table.insert(names, name)
+    end
+    summary.playerNames = names
     table.insert(ReadyCheckShameDB.history, summary)
     -- Keep last 50 nights max
     while #ReadyCheckShameDB.history > 50 do
@@ -207,6 +250,12 @@ local function EnsurePlayer(name)
     if not d.totalResponseTime then d.totalResponseTime = 0 end
     if not d.timeWasted then d.timeWasted = 0 end
     if not d.responseCount then d.responseCount = 0 end
+    -- Tag player with current group
+    local group = ReadyCheckShameDB.tonight.group
+    if group then
+        if not d.groups then d.groups = {} end
+        d.groups[group] = true
+    end
     -- Tonight
     if not ReadyCheckShameDB.tonight.players[name] then
         ReadyCheckShameDB.tonight.players[name] = EmptyStats()
@@ -219,19 +268,22 @@ local function IncrementStat(name, field, amount)
     ReadyCheckShameDB.tonight.players[name][field] = ReadyCheckShameDB.tonight.players[name][field] + amount
 end
 
+local respondedThisCheck = {}
+
 local function RecordResponseTime(name, elapsed)
+    if respondedThisCheck[name] then return end
+    respondedThisCheck[name] = true
     EnsurePlayer(name)
     IncrementStat(name, "totalResponseTime", elapsed)
     IncrementStat(name, "responseCount", 1)
-    -- timeWasted is now calculated at end of ready check, not here
 end
 
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[ReadyCheckStats]|r " .. msg)
 end
 
--- Severity weights for time wasted
-local SEVERITY = { slow = 1, notready = 2, afk = 5, chat = 3 }
+-- Severity weights (all equal — no multipliers)
+local SEVERITY = { slow = 1, notready = 1, afk = 1, chat = 1 }
 
 local function FinalizeSession(pullTime)
     if not sessionActive then return end
@@ -290,6 +342,25 @@ local function StripRealm(name)
     return strsplit("-", name, 2)
 end
 
+-- Mark anyone we're still waiting on as chat-ready right now (e.g. pull timer / combat start)
+local function MarkWaitersReady()
+    if readyCheckEndTime == 0 then return end
+    local elapsed = GetTime() - readyCheckEndTime
+    for name in pairs(waitingOnPlayers) do
+        if not chatReadyMembers[name] then
+            chatReadyMembers[name] = elapsed
+            if not sessionProblems[name] then
+                sessionProblems[name] = { checks = 0, worst = "chat" }
+            end
+            sessionProblems[name].checks = sessionProblems[name].checks + 1
+            if SEVERITY["chat"] > SEVERITY[sessionProblems[name].worst] then
+                sessionProblems[name].worst = "chat"
+            end
+        end
+    end
+    wipe(waitingOnPlayers)
+end
+
 --------------------------------------------------------------------------------
 -- Event handling
 --------------------------------------------------------------------------------
@@ -300,7 +371,6 @@ frame:RegisterEvent("READY_CHECK")
 frame:RegisterEvent("READY_CHECK_CONFIRM")
 frame:RegisterEvent("READY_CHECK_FINISHED")
 frame:RegisterEvent("ENCOUNTER_START")
-pcall(frame.RegisterEvent, frame, "PLAYER_REGEN_LOST")
 frame:RegisterEvent("CHAT_MSG_RAID")
 frame:RegisterEvent("CHAT_MSG_RAID_LEADER")
 frame:RegisterEvent("CHAT_MSG_PARTY")
@@ -316,8 +386,9 @@ frame:SetScript("OnEvent", function(self, event, ...)
             self:UnregisterEvent("ADDON_LOADED")
         end
 
-    elseif event == "ENCOUNTER_START" or event == "PLAYER_REGEN_LOST" then
+    elseif event == "ENCOUNTER_START" then
         -- Pull happened (with or without a timer) — finalize session
+        MarkWaitersReady()
         if sessionActive then
             FinalizeSession(GetTime())
         end
@@ -336,6 +407,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
         activeCheck = true
         pendingMembers = {}
         responseTimes = {}
+        respondedThisCheck = {}
         checkStartTime = now
         waitingForPull = false
         chatReadyMembers = {}
@@ -352,8 +424,9 @@ frame:SetScript("OnEvent", function(self, event, ...)
             sessionGroupSize = groupSize
         end
 
-        -- arg1 = initiator name
+        -- arg1 = initiator name (may be "Name-Realm" format)
         local initiator = SafeValue((...))
+        initiator = StripRealm(initiator)
 
         -- Detect group label (retry if nil — guild info loads late)
         if not ReadyCheckShameDB.tonight.group then
@@ -416,7 +489,8 @@ frame:SetScript("OnEvent", function(self, event, ...)
                 -- but don't add to slow list since we can't trust the timing.
                 RecordResponseTime(name, checkDuration)
             else
-                -- "waiting" = never responded
+                -- "waiting" = never responded — count as full check duration
+                RecordResponseTime(name, checkDuration)
                 EnsurePlayer(name)
                 IncrementStat(name, "afk", 1)
                 afkNames[name] = true
@@ -596,14 +670,13 @@ frame:SetScript("OnEvent", function(self, event, ...)
         if not msg or not sender then return end
 
         local shortMsg = strtrim(msg):lower()
-        if shortMsg == "r" or shortMsg == "rdy"
-            or string.find(shortMsg, "ready")
-            or string.find(shortMsg, "redy")
-            or string.find(shortMsg, "i'm r")
-            or string.find(shortMsg, "im r")
-            or string.find(shortMsg, "now r")
-            or string.find(shortMsg, "here")
-            or string.find(shortMsg, "back") then
+        local padded = " "..shortMsg.." "
+        if string.find(padded, "%Wr%W")
+            or string.find(padded, "%Wrdy%W")
+            or string.find(padded, "%Wready%W")
+            or string.find(padded, "%Wredy%W")
+            or string.find(padded, "%Where%W")
+            or string.find(padded, "%Wback%W") then
             local name = StripRealm(sender)
             if name and not chatReadyMembers[name] and waitingOnPlayers[name] then
                 local elapsed = GetTime() - readyCheckEndTime
@@ -628,6 +701,11 @@ frame:SetScript("OnEvent", function(self, event, ...)
         end
 
         if string.find(shortMsg, "pull in") or string.find(shortMsg, "pull timer") then
+            MarkWaitersReady()
+            FinalizeSession(GetTime())
+            waitingForPull = false
+        end
+        if string.find(shortMsg, "break") then
             FinalizeSession(GetTime())
             waitingForPull = false
         end
@@ -637,7 +715,12 @@ end)
 -- DBM pull timer detection
 if DBM and DBM.RegisterCallback then
     DBM:RegisterCallback("DBM_TimerStart", function(_, id, msg)
-        if msg and string.find(msg:lower(), "pull") then
+        local lower = msg:lower()
+        if string.find(lower, "pull") then
+            MarkWaitersReady()
+            FinalizeSession(GetTime())
+            waitingForPull = false
+        elseif string.find(lower, "break") then
             FinalizeSession(GetTime())
             waitingForPull = false
         end
@@ -649,18 +732,26 @@ local bwFrame = CreateFrame("Frame")
 bwFrame:RegisterEvent("CHAT_MSG_ADDON")
 bwFrame:SetScript("OnEvent", function(self, event, prefix, msg)
     if prefix == "BigWigs" or prefix == "D4" then
-        if msg and (string.find(msg, "Pull") or string.find(msg, "pull")) then
-            FinalizeSession(GetTime())
-            waitingForPull = false
+        if msg then
+            local lower = msg:lower()
+            if string.find(lower, "pull") then
+                MarkWaitersReady()
+                FinalizeSession(GetTime())
+                waitingForPull = false
+            elseif string.find(lower, "break") then
+                FinalizeSession(GetTime())
+                waitingForPull = false
+            end
         end
     end
 end)
 C_ChatInfo.RegisterAddonMessagePrefix("BigWigs")
 C_ChatInfo.RegisterAddonMessagePrefix("D4")
 
--- Stop tracking chat readies after 2 minutes, finalize session
+-- Stop tracking chat readies after 5 minutes, finalize session
 C_Timer.NewTicker(10, function()
-    if waitingForPull and (GetTime() - readyCheckEndTime > 120) then
+    if waitingForPull and (GetTime() - readyCheckEndTime > 300) then
+        Print("No pull detected after 5 minutes — ending session.")
         FinalizeSession(GetTime())
         waitingForPull = false
     end
@@ -862,15 +953,16 @@ local function ShowTrend(toChat)
         local curr = all[#all]
         local diff = curr.perfectRate - prev.perfectRate
         local timeDiff = curr.avgTime - prev.avgTime
-        if diff > 0 then
+        if diff >= 0.5 then
             out(string.format("Trending up! +%.0f%% perfect rate vs last time", diff))
-        elseif diff < 0 then
+        elseif diff <= -0.5 then
             out(string.format("Trending down... %.0f%% perfect rate vs last time", diff))
         end
-        if timeDiff < -0.5 then
-            out(string.format("Getting faster! %.1fs quicker on average", -timeDiff))
-        elseif timeDiff > 0.5 then
-            out(string.format("Getting slower... %.1fs slower on average", timeDiff))
+        local wastedDiff = curr.timeWasted - prev.timeWasted
+        if wastedDiff < -60 then
+            out(string.format("Less time wasted! %.1fm saved vs last time", -wastedDiff / 60))
+        elseif wastedDiff > 60 then
+            out(string.format("More time wasted... %.1fm more vs last time", wastedDiff / 60))
         end
     end
 end
@@ -969,15 +1061,15 @@ SlashCmdList["READYCHECKSTATS"] = function(msg)
         RunTests()
     elseif msg == "help" then
         Print("Commands:")
-        Print("  /rcs — tonight's leaderboard")
+        Print("  /rcs — open leaderboard window")
+        Print("  /rcs text — tonight's leaderboard (chat)")
         Print("  /rcs all — all-time leaderboard")
-        Print("  /rcs ui — open visual leaderboard window")
         Print("  /rcs mvp — tonight's MVPs (positive only)")
         Print("  /rcs trend — raid night trends over time")
         Print("  /rcs share [mvp|trend|all] — post to raid chat")
         Print("  /rcs reset [tonight] — clear data")
         Print("  /rcs test — run self-tests")
-    else
+    elseif msg == "text" then
         ShowLeaderboard(false, "tonight")
     end
 end
