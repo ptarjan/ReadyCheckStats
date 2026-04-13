@@ -694,8 +694,10 @@ frame:SetScript("OnEvent", function(self, event, ...)
                 -- Remove from waiting list and check if everyone's ready
                 waitingOnPlayers[name] = nil
                 if next(waitingOnPlayers) == nil then
-                    Print("Everyone's ready — pull!")
-                    PlaySound(8959) -- raid warning sound
+                    C_Timer.After(0, function()
+                        Print("Everyone's ready — pull!")
+                        PlaySound(8959) -- raid warning sound
+                    end)
                 end
             end
         end
