@@ -76,24 +76,24 @@ local function DetectGroupLabel()
         end
     end
 
-    -- Prefer player's own guild if it has a meaningful presence (at least 20% of counted members)
-    local playerGuild = GetGuildInfo("player")
-    playerGuild = SafeValue(playerGuild)
-    local totalCounted = 0
-    for _, count in pairs(guilds) do
-        totalCounted = totalCounted + count
-    end
-
-    if playerGuild and guilds[playerGuild] and totalCounted > 0 then
-        if guilds[playerGuild] / totalCounted >= 0.2 then
-            return playerGuild
+    -- Return the most common guild, raid leader's guild as tiebreaker
+    local leaderGuild
+    if IsInRaid() then
+        for i = 1, GetNumGroupMembers() do
+            local _, rank = GetRaidRosterInfo(i)
+            if issecretvalue and issecretvalue(rank) then rank = nil end
+            if rank and rank == 2 then
+                local lg = GetGuildInfo("raid" .. i)
+                lg = SafeValue(lg)
+                leaderGuild = lg
+                break
+            end
         end
     end
 
-    -- Otherwise return the most common guild
     local best, bestCount = nil, 0
     for guild, count in pairs(guilds) do
-        if count > bestCount then
+        if count > bestCount or (count == bestCount and guild == leaderGuild) then
             best = guild
             bestCount = count
         end
@@ -371,6 +371,7 @@ frame:RegisterEvent("READY_CHECK")
 frame:RegisterEvent("READY_CHECK_CONFIRM")
 frame:RegisterEvent("READY_CHECK_FINISHED")
 frame:RegisterEvent("ENCOUNTER_START")
+pcall(frame.RegisterEvent, frame, "PLAYER_REGEN_LOST")
 frame:RegisterEvent("CHAT_MSG_RAID")
 frame:RegisterEvent("CHAT_MSG_RAID_LEADER")
 frame:RegisterEvent("CHAT_MSG_PARTY")
@@ -386,8 +387,8 @@ frame:SetScript("OnEvent", function(self, event, ...)
             self:UnregisterEvent("ADDON_LOADED")
         end
 
-    elseif event == "ENCOUNTER_START" then
-        -- Pull happened (with or without a timer) — finalize session
+    elseif event == "PLAYER_REGEN_LOST" or event == "ENCOUNTER_START" then
+        -- Any combat — everyone's implicitly ready, finalize session
         MarkWaitersReady()
         if sessionActive then
             FinalizeSession(GetTime())
@@ -428,10 +429,8 @@ frame:SetScript("OnEvent", function(self, event, ...)
         local initiator = SafeValue((...))
         initiator = StripRealm(initiator)
 
-        -- Detect group label (retry if nil — guild info loads late)
-        if not ReadyCheckShameDB.tonight.group then
-            ReadyCheckShameDB.tonight.group = DetectGroupLabel()
-        end
+        -- Re-detect group label each ready check (guild info loads late)
+        ReadyCheckShameDB.tonight.group = DetectGroupLabel() or ReadyCheckShameDB.tonight.group
 
         for name, unit in pairs(members) do
             EnsurePlayer(name)
@@ -681,7 +680,6 @@ frame:SetScript("OnEvent", function(self, event, ...)
             if name and not chatReadyMembers[name] and waitingOnPlayers[name] then
                 local elapsed = GetTime() - readyCheckEndTime
                 chatReadyMembers[name] = elapsed
-                -- Track as chat-ready in the session (3x severity)
                 if not sessionProblems[name] then
                     sessionProblems[name] = { checks = 0, worst = "chat" }
                 end
@@ -752,7 +750,7 @@ C_ChatInfo.RegisterAddonMessagePrefix("D4")
 
 -- Stop tracking chat readies after 5 minutes, finalize session
 C_Timer.NewTicker(10, function()
-    if waitingForPull and (GetTime() - readyCheckEndTime > 300) then
+    if waitingForPull and not InCombatLockdown() and (GetTime() - readyCheckEndTime > 300) then
         Print("No pull detected after 5 minutes — ending session.")
         FinalizeSession(GetTime())
         waitingForPull = false
@@ -1038,8 +1036,8 @@ end
 SLASH_READYCHECKSTATS1 = "/rcs"
 SLASH_READYCHECKSTATS2 = "/readycheckstats"
 
-SlashCmdList["READYCHECKSTATS"] = function(msg)
-    msg = strtrim(msg):lower()
+SlashCmdList["READYCHECKSTATS"] = function(rawMsg)
+    local msg = strtrim(rawMsg):lower()
     if msg == "reset" then
         ResetData()
     elseif msg == "reset tonight" then
@@ -1069,8 +1067,15 @@ SlashCmdList["READYCHECKSTATS"] = function(msg)
         Print("  /rcs mvp — tonight's MVPs (positive only)")
         Print("  /rcs trend — raid night trends over time")
         Print("  /rcs share [mvp|trend|all] — post to raid chat")
+        Print("  /rcs group <name> — set tonight's group name")
         Print("  /rcs reset [tonight] — clear data")
         Print("  /rcs test — run self-tests")
+    elseif msg:sub(1, 6) == "group " then
+        local groupName = strtrim(strtrim(rawMsg):sub(7))
+        if groupName ~= "" then
+            ReadyCheckShameDB.tonight.group = groupName
+            Print("Group set to: " .. groupName)
+        end
     elseif msg == "text" then
         ShowLeaderboard(false, "tonight")
     end
