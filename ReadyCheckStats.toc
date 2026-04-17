@@ -5,6 +5,7 @@
 ## Author: ptarjan
 ## Version: 1.0.0
 ## SavedVariables: ReadyCheckShameDB
+## X-Curse-Project-ID: 1512694
 
 ReadyCheckStats.lua
 ReadyCheckStatsUI.lua
