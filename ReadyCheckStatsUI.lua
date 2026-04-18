@@ -85,12 +85,15 @@ local function BuildEntries(playerTable, groupFilter)
                 if data.responseCount and data.responseCount > 0 then
                     avgTime = data.totalResponseTime / data.responseCount
                 end
+                if failures > data.seen then failures = data.seen end
+                local failPct = data.seen > 0 and (failures / data.seen * 100) or 0
                 table.insert(entries, {
                     name     = name,
                     seen     = data.seen,
                     notready = data.notready or 0,
                     afk      = data.afk or 0,
                     failures = failures,
+                    failPct  = failPct,
                     avgTime  = avgTime,
                     timeWasted = data.timeWasted or 0,
                 })
@@ -414,7 +417,7 @@ local function ClearScrollContent(parent)
 end
 
 -- Sort state
-local currentSortKey = "failures"
+local currentSortKey = "failPct"
 local currentSortAsc = false -- descending by default
 
 local function SortEntries(entries, key, ascending)
@@ -502,7 +505,7 @@ local PLAYER_COLS = {
     { label = "AFK",        x = 220, width = 30,  justify = "LEFT",  sortKey = "afk" },
     { label = "Avg",        x = 260, width = 50,  justify = "LEFT",  sortKey = "avgTime" },
     { label = "Wasted",     x = 320, width = 70,  justify = "LEFT",  sortKey = "timeWasted" },
-    { label = "Fail %",     x = 400, width = 55,  justify = "LEFT",  sortKey = "failures" },
+    { label = "Fail %",     x = 400, width = 55,  justify = "LEFT",  sortKey = "failPct" },
 }
 
 local function PopulatePlayerList(parent, entries, yOffset)

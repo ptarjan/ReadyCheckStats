@@ -170,6 +170,25 @@ local function InitDB()
         ReadyCheckShameDB.tonight = { date = Today(), players = {} }
     end
 
+    -- Clean up duplicate lowercase group keys (e.g. "cowfee" when "Cowfee" exists)
+    for _, d in pairs(ReadyCheckShameDB.alltime) do
+        if d.groups then
+            local toRemove = {}
+            for g in pairs(d.groups) do
+                if g ~= g:sub(1,1):upper() .. g:sub(2) then
+                    -- Lowercase first letter — check if proper-cased version exists
+                    local proper = g:sub(1,1):upper() .. g:sub(2)
+                    if d.groups[proper] then
+                        tinsert(toRemove, g)
+                    end
+                end
+            end
+            for _, g in ipairs(toRemove) do
+                d.groups[g] = nil
+            end
+        end
+    end
+
     -- Backfill group tags from history and tonight
     for _, h in ipairs(ReadyCheckShameDB.history) do
         if h.group and h.playerNames then
@@ -445,6 +464,10 @@ frame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "READY_CHECK_CONFIRM" then
         if not activeCheck then return end
+        -- Auto-refresh UI if open
+        if RCSFrame and RCSFrame:IsShown() and RCSFrame.RefreshContent then
+            C_Timer.After(0, function() RCSFrame:RefreshContent() end)
+        end
 
         local unit, isReady = ...
         unit = SafeValue(unit)
@@ -454,6 +477,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
         local name = UnitName(unit)
         name = SafeValue(name)
         if not name then return end
+        if not pendingMembers[name] then return end
 
         local elapsed = GetTime() - checkStartTime
 
@@ -691,6 +715,9 @@ frame:SetScript("OnEvent", function(self, event, ...)
 
                 -- Remove from waiting list and check if everyone's ready
                 waitingOnPlayers[name] = nil
+                if RCSFrame and RCSFrame:IsShown() and RCSFrame.RefreshContent then
+                    RCSFrame:RefreshContent()
+                end
                 if next(waitingOnPlayers) == nil then
                     C_Timer.After(0, function()
                         Print("Everyone's ready — pull!")
@@ -748,7 +775,18 @@ end)
 C_ChatInfo.RegisterAddonMessagePrefix("BigWigs")
 C_ChatInfo.RegisterAddonMessagePrefix("D4")
 
--- Stop tracking chat readies after 5 minutes, finalize session
+-- Poll combat state: if we enter combat while waiting, treat it as a pull
+C_Timer.NewTicker(1, function()
+    if waitingForPull and InCombatLockdown() then
+        MarkWaitersReady()
+        if sessionActive then
+            FinalizeSession(GetTime())
+        end
+        waitingForPull = false
+    end
+end)
+
+-- Stop tracking chat readies after 5 minutes with no pull
 C_Timer.NewTicker(10, function()
     if waitingForPull and not InCombatLockdown() and (GetTime() - readyCheckEndTime > 300) then
         Print("No pull detected after 5 minutes — ending session.")
