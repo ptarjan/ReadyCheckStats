@@ -170,6 +170,16 @@ local function InitDB()
         ReadyCheckShameDB.tonight = { date = Today(), players = {} }
     end
 
+    -- Remove bogus alltime entries (blank names, single-seen with huge wasted time)
+    if ReadyCheckShameDB.alltime[""] then
+        ReadyCheckShameDB.alltime[""] = nil
+    end
+    for name, d in pairs(ReadyCheckShameDB.alltime) do
+        if d.seen and d.seen <= 1 and d.timeWasted and d.timeWasted > 10000 then
+            ReadyCheckShameDB.alltime[name] = nil
+        end
+    end
+
     -- Clean up duplicate lowercase group keys (e.g. "cowfee" when "Cowfee" exists)
     for _, d in pairs(ReadyCheckShameDB.alltime) do
         if d.groups then
@@ -711,8 +721,6 @@ frame:SetScript("OnEvent", function(self, event, ...)
                 if SEVERITY["chat"] > SEVERITY[sessionProblems[name].worst] then
                     sessionProblems[name].worst = "chat"
                 end
-                Print(string.format("%s said ready in chat (%.1fs after check ended)", name, elapsed))
-
                 -- Remove from waiting list and check if everyone's ready
                 waitingOnPlayers[name] = nil
                 if RCSFrame and RCSFrame:IsShown() and RCSFrame.RefreshContent then
