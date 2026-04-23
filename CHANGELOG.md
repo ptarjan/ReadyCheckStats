@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.2
+- Update for WoW 12.0.5
+- Chat trigger "b" now also means back
+
+## 1.2.1
+- Remove individual "X said ready in chat" messages — only shows "Everyone's ready — pull!"
+- Auto-clean bogus data entries on load (blank names, timeout-bugged stats)
+
+## 1.2.0
+- Fix fail% sorting — now sorts by actual percentage, not count
+- Fix fail% sometimes showing over 100%
+- Fix duplicate group names in filters
+- UI updates in real-time as people click ready
+
 ## 1.1.1
 - Fix fail% sorting — now sorts by actual percentage, not count
 - Fix fail% sometimes showing over 100%

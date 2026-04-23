@@ -705,6 +705,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
         local shortMsg = strtrim(msg):lower()
         local padded = " "..shortMsg.." "
         if string.find(padded, "%Wr%W")
+            or string.find(padded, "%Wb%W")
             or string.find(padded, "%Wrdy%W")
             or string.find(padded, "%Wready%W")
             or string.find(padded, "%Wredy%W")
