@@ -729,7 +729,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
                 end
                 if next(waitingOnPlayers) == nil then
                     C_Timer.After(0, function()
-                        Print("Everyone's ready — pull!")
+                        Print("|cff00ff00Everyone's ready — pull!|r")
                         PlaySound(8959) -- raid warning sound
                     end)
                 end

@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.2.3
+- Make the "Everyone's ready — pull!" message bright green so it's harder to miss in chat
+
 ## 1.2.2
 - Update for WoW 12.0.5
 - Chat trigger "b" now also means back
