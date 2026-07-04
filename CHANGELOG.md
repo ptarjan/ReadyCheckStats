@@ -5,6 +5,7 @@
 - Fix: error when clicking Yes on the reset confirmation in the stats window
 - Fix: a Ready click could occasionally be miscounted as Not Ready
 - Fix: one of the perfect-check cheer messages showed a stray "%" sign
+- Fix: the stats window no longer slowly uses more memory the longer it stays open during a raid
 - Update for WoW 12.0.7
 
 ## 1.2.3

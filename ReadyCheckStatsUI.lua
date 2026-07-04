@@ -406,16 +406,71 @@ end
 -- Clear and populate content
 --------------------------------------------------------------------------------
 
+--------------------------------------------------------------------------------
+-- Widget pools
+--
+-- WoW never garbage-collects UI objects, and Refresh runs on every ready
+-- check confirm while the window is open — creating fresh rows each time
+-- (as this file originally did) leaks thousands of frames over a raid
+-- night. Rows are pooled by kind: a builder creates a frame's children
+-- once, and refreshes only update text/colors.
+--------------------------------------------------------------------------------
+
+local function AcquireFrame(sc, kind, buildFn)
+    sc.pools = sc.pools or {}
+    local pool = sc.pools[kind]
+    if not pool then
+        pool = { free = {}, active = {} }
+        sc.pools[kind] = pool
+    end
+    local f = table.remove(pool.free)
+    if not f then
+        f = CreateFrame("Frame", nil, sc)
+        buildFn(f)
+    end
+    table.insert(pool.active, f)
+    f:ClearAllPoints()
+    f:Show()
+    return f
+end
+
+local function AcquireText(sc)
+    sc.fsPool = sc.fsPool or { free = {}, active = {} }
+    local fs = table.remove(sc.fsPool.free)
+    if not fs then
+        fs = sc:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    end
+    table.insert(sc.fsPool.active, fs)
+    fs:ClearAllPoints()
+    fs:SetWidth(0)
+    fs:SetJustifyH("LEFT")
+    fs:Show()
+    return fs
+end
+
 local function ClearScrollContent(parent)
-    for _, child in ipairs({ parent.scrollChild:GetRegions() }) do
-        child:Hide()
-        child:SetParent(nil)
+    local sc = parent.scrollChild
+    if sc.pools then
+        for _, pool in pairs(sc.pools) do
+            for i = #pool.active, 1, -1 do
+                local f = table.remove(pool.active)
+                f:Hide()
+                table.insert(pool.free, f)
+            end
+        end
     end
-    -- Also clear child frames
-    for _, child in ipairs({ parent.scrollChild:GetChildren() }) do
-        child:Hide()
-        child:SetParent(nil)
+    if sc.fsPool then
+        for i = #sc.fsPool.active, 1, -1 do
+            local fs = table.remove(sc.fsPool.active)
+            fs:Hide()
+            table.insert(sc.fsPool.free, fs)
+        end
     end
+    -- Cached one-off frames (headers, filter row) are hidden, not pooled.
+    if sc.headerRows then
+        for _, row in pairs(sc.headerRows) do row:Hide() end
+    end
+    if sc.filterRow then sc.filterRow:Hide() end
 end
 
 -- Sort state
@@ -434,67 +489,80 @@ local function SortEntries(entries, key, ascending)
     end)
 end
 
+-- One header row is built per column set and cached on the scroll child;
+-- subsequent refreshes just reposition it and repaint the sort arrows.
 local function MakeHeaderRow(scrollChild, y, columns, refreshFn)
-    local row = CreateFrame("Frame", nil, scrollChild)
-    row:SetSize(SCROLL_WIDTH, HEADER_HEIGHT)
-    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -y)
+    scrollChild.headerRows = scrollChild.headerRows or {}
+    local row = scrollChild.headerRows[columns]
 
-    -- Subtle header background
-    local bg = row:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints()
-    bg:SetColorTexture(0.2, 0.2, 0.2, 0.5)
+    if not row then
+        row = CreateFrame("Frame", nil, scrollChild)
+        row:SetSize(SCROLL_WIDTH, HEADER_HEIGHT)
+        row.updateLabels = {}
 
-    for _, col in ipairs(columns) do
-        if col.sortKey then
-            -- Clickable header button
-            local btn = CreateFrame("Button", nil, row)
-            btn:SetPoint("LEFT", row, "LEFT", col.x, 0)
-            btn:SetSize(col.width, HEADER_HEIGHT)
+        -- Subtle header background
+        local bg = row:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        bg:SetColorTexture(0.2, 0.2, 0.2, 0.5)
 
-            local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            fs:SetAllPoints()
-            if col.justify then fs:SetJustifyH(col.justify) end
+        for _, col in ipairs(columns) do
+            if col.sortKey then
+                -- Clickable header button
+                local btn = CreateFrame("Button", nil, row)
+                btn:SetPoint("LEFT", row, "LEFT", col.x, 0)
+                btn:SetSize(col.width, HEADER_HEIGHT)
 
-            local function UpdateLabel()
-                local arrow = ""
-                if currentSortKey == col.sortKey then
-                    arrow = currentSortAsc and " ^" or " v"
+                local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                fs:SetAllPoints()
+                if col.justify then fs:SetJustifyH(col.justify) end
+
+                local function UpdateLabel()
+                    local arrow = ""
+                    if currentSortKey == col.sortKey then
+                        arrow = currentSortAsc and " ^" or " v"
+                    end
+                    fs:SetText(col.label .. arrow)
+                    if currentSortKey == col.sortKey then
+                        fs:SetTextColor(1, 0.84, 0)
+                    else
+                        fs:SetTextColor(0.7, 0.7, 0.7)
+                    end
                 end
-                fs:SetText(col.label .. arrow)
-                if currentSortKey == col.sortKey then
-                    fs:SetTextColor(1, 0.84, 0)
-                else
-                    fs:SetTextColor(0.7, 0.7, 0.7)
-                end
+                table.insert(row.updateLabels, UpdateLabel)
+
+                btn:SetScript("OnClick", function()
+                    if currentSortKey == col.sortKey then
+                        currentSortAsc = not currentSortAsc
+                    else
+                        currentSortKey = col.sortKey
+                        currentSortAsc = false
+                    end
+                    if refreshFn then refreshFn() end
+                end)
+
+                btn:SetScript("OnEnter", function()
+                    fs:SetTextColor(1, 1, 1)
+                end)
+                btn:SetScript("OnLeave", function()
+                    UpdateLabel()
+                end)
+            else
+                local fs = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                fs:SetPoint("LEFT", row, "LEFT", col.x, 0)
+                fs:SetText(col.label)
+                fs:SetTextColor(0.7, 0.7, 0.7)
+                if col.width then fs:SetWidth(col.width) end
+                if col.justify then fs:SetJustifyH(col.justify) end
             end
-
-            btn:SetScript("OnClick", function()
-                if currentSortKey == col.sortKey then
-                    currentSortAsc = not currentSortAsc
-                else
-                    currentSortKey = col.sortKey
-                    currentSortAsc = false
-                end
-                if refreshFn then refreshFn() end
-            end)
-
-            btn:SetScript("OnEnter", function()
-                fs:SetTextColor(1, 1, 1)
-            end)
-            btn:SetScript("OnLeave", function()
-                UpdateLabel()
-            end)
-
-            UpdateLabel()
-        else
-            local fs = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            fs:SetPoint("LEFT", row, "LEFT", col.x, 0)
-            fs:SetText(col.label)
-            fs:SetTextColor(0.7, 0.7, 0.7)
-            if col.width then fs:SetWidth(col.width) end
-            if col.justify then fs:SetJustifyH(col.justify) end
         end
+
+        scrollChild.headerRows[columns] = row
     end
+
+    row:ClearAllPoints()
+    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -y)
+    row:Show()
+    for _, update in ipairs(row.updateLabels) do update() end
 
     return HEADER_HEIGHT
 end
@@ -510,6 +578,21 @@ local PLAYER_COLS = {
     { label = "Fail %",     x = 400, width = 55,  justify = "LEFT",  sortKey = "failPct" },
 }
 
+local function BuildPlayerRow(row)
+    row:SetSize(SCROLL_WIDTH, ROW_HEIGHT)
+    row.bg = row:CreateTexture(nil, "BACKGROUND")
+    row.bg:SetAllPoints()
+    row.bg:SetColorTexture(0.15, 0.15, 0.15, 0.4)
+    row.cells = {}
+    for ci, col in ipairs(PLAYER_COLS) do
+        local fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        fs:SetPoint("LEFT", row, "LEFT", col.x, 0)
+        fs:SetWidth(col.width)
+        fs:SetJustifyH(col.justify)
+        row.cells[ci] = fs
+    end
+end
+
 local function PopulatePlayerList(parent, entries, yOffset)
     local sc = parent.scrollChild
     local y = yOffset or 0
@@ -523,7 +606,7 @@ local function PopulatePlayerList(parent, entries, yOffset)
     y = y + MakeHeaderRow(sc, y, PLAYER_COLS, refreshFn)
 
     if #entries == 0 then
-        local empty = sc:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        local empty = AcquireText(sc)
         empty:SetPoint("TOPLEFT", sc, "TOPLEFT", 6, -(y + 20))
         empty:SetText("No ready check data yet.")
         empty:SetTextColor(0.5, 0.5, 0.5)
@@ -532,17 +615,12 @@ local function PopulatePlayerList(parent, entries, yOffset)
         return entries
     end
 
-    for _, e in ipairs(entries) do
-        local row = CreateFrame("Frame", nil, sc)
-        row:SetSize(SCROLL_WIDTH, ROW_HEIGHT)
+    for i, e in ipairs(entries) do
+        local row = AcquireFrame(sc, "playerRow", BuildPlayerRow)
         row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -y)
 
         -- Alternating row background
-        if _ % 2 == 0 then
-            local bg = row:CreateTexture(nil, "BACKGROUND")
-            bg:SetAllPoints()
-            bg:SetColorTexture(0.15, 0.15, 0.15, 0.4)
-        end
+        row.bg:SetShown(i % 2 == 0)
 
         local rate = e.seen > 0 and (e.failures / e.seen * 100) or 0
         local cr, cg, cb = FailColor(rate)
@@ -558,11 +636,8 @@ local function PopulatePlayerList(parent, entries, yOffset)
             { text = string.format("%.0f%%", rate),   r = cr,  g = cg,  b = cb },
         }
 
-        for ci, col in ipairs(PLAYER_COLS) do
-            local fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            fs:SetPoint("LEFT", row, "LEFT", col.x, 0)
-            fs:SetWidth(col.width)
-            fs:SetJustifyH(col.justify)
+        for ci in ipairs(PLAYER_COLS) do
+            local fs = row.cells[ci]
             fs:SetText(values[ci].text)
             fs:SetTextColor(values[ci].r, values[ci].g, values[ci].b)
         end
@@ -583,6 +658,27 @@ local TREND_COLS = {
     { label = "Avg",       x = 312, width = 45,  justify = "RIGHT" },
     { label = "Wasted",    x = 364, width = 70,  justify = "RIGHT" },
 }
+
+local function BuildTrendRow(row)
+    row:SetSize(SCROLL_WIDTH, ROW_HEIGHT)
+    row.bg = row:CreateTexture(nil, "BACKGROUND")
+    row.bg:SetAllPoints()
+    row.bg:SetColorTexture(0.15, 0.15, 0.15, 0.4)
+
+    local function cell(point, x, width, justify)
+        local fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        fs:SetPoint(point, row, "LEFT", x, 0)
+        fs:SetWidth(width)
+        fs:SetJustifyH(justify)
+        return fs
+    end
+    row.dateFs   = cell("LEFT", 6, 80, "LEFT")
+    row.groupFs  = cell("LEFT", 92, 90, "LEFT")
+    row.checksFs = cell("RIGHT", 239, 45, "RIGHT")
+    row.perfFs   = cell("RIGHT", 305, 55, "RIGHT")
+    row.avgFs    = cell("RIGHT", 357, 45, "LEFT")
+    row.wastedFs = cell("RIGHT", 434, 70, "RIGHT")
+end
 
 local function PopulateTrends(parent)
     local sc = parent.scrollChild
@@ -611,7 +707,7 @@ local function PopulateTrends(parent)
     end
 
     if #all == 0 then
-        local empty = sc:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        local empty = AcquireText(sc)
         empty:SetPoint("TOPLEFT", sc, "TOPLEFT", 6, -(y + 20))
         empty:SetText("No raid night history yet.")
         empty:SetTextColor(0.5, 0.5, 0.5)
@@ -620,65 +716,30 @@ local function PopulateTrends(parent)
     end
 
     for idx, h in ipairs(all) do
-        local row = CreateFrame("Frame", nil, sc)
-        row:SetSize(SCROLL_WIDTH, ROW_HEIGHT)
+        local row = AcquireFrame(sc, "trendRow", BuildTrendRow)
         row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -y)
 
-        if idx % 2 == 0 then
-            local bg = row:CreateTexture(nil, "BACKGROUND")
-            bg:SetAllPoints()
-            bg:SetColorTexture(0.15, 0.15, 0.15, 0.4)
-        end
+        row.bg:SetShown(idx % 2 == 0)
 
         local pr, pg, pb = PerfectColor(h.perfectRate or 0)
 
-        -- Date
-        local dateFs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        dateFs:SetPoint("LEFT", row, "LEFT", 6, 0)
-        dateFs:SetWidth(80)
-        dateFs:SetJustifyH("LEFT")
-        dateFs:SetText(h.date or "?")
-        dateFs:SetTextColor(pr, pg, pb)
+        row.dateFs:SetText(h.date or "?")
+        row.dateFs:SetTextColor(pr, pg, pb)
 
-        -- Group
-        local groupFs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        groupFs:SetPoint("LEFT", row, "LEFT", 92, 0)
-        groupFs:SetWidth(90)
-        groupFs:SetJustifyH("LEFT")
-        groupFs:SetText(h.group or "-")
-        groupFs:SetTextColor(0.7, 0.7, 0.7)
+        row.groupFs:SetText(h.group or "-")
+        row.groupFs:SetTextColor(0.7, 0.7, 0.7)
 
-        -- Checks
-        local checksFs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        checksFs:SetPoint("RIGHT", row, "LEFT", 239, 0)
-        checksFs:SetWidth(45)
-        checksFs:SetJustifyH("RIGHT")
-        checksFs:SetText(tostring(h.checks or 0))
-        checksFs:SetTextColor(0.8, 0.8, 0.8)
+        row.checksFs:SetText(tostring(h.checks or 0))
+        row.checksFs:SetTextColor(0.8, 0.8, 0.8)
 
-        -- Perfect %
-        local perfFs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        perfFs:SetPoint("RIGHT", row, "LEFT", 305, 0)
-        perfFs:SetWidth(55)
-        perfFs:SetJustifyH("RIGHT")
-        perfFs:SetText(string.format("%.0f%%", h.perfectRate or 0))
-        perfFs:SetTextColor(pr, pg, pb)
+        row.perfFs:SetText(string.format("%.0f%%", h.perfectRate or 0))
+        row.perfFs:SetTextColor(pr, pg, pb)
 
-        -- Avg time
-        local avgFs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        avgFs:SetPoint("RIGHT", row, "LEFT", 357, 0)
-        avgFs:SetWidth(45)
-        avgFs:SetJustifyH("LEFT")
-        avgFs:SetText(FormatAvgTime(h.avgTime))
-        avgFs:SetTextColor(0.8, 0.8, 0.8)
+        row.avgFs:SetText(FormatAvgTime(h.avgTime))
+        row.avgFs:SetTextColor(0.8, 0.8, 0.8)
 
-        -- Wasted
-        local wastedFs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        wastedFs:SetPoint("RIGHT", row, "LEFT", 434, 0)
-        wastedFs:SetWidth(70)
-        wastedFs:SetJustifyH("RIGHT")
-        wastedFs:SetText(FormatTime(h.timeWasted))
-        wastedFs:SetTextColor(0.8, 0.6, 0.4)
+        row.wastedFs:SetText(FormatTime(h.timeWasted))
+        row.wastedFs:SetTextColor(0.8, 0.6, 0.4)
 
         y = y + ROW_HEIGHT
     end
@@ -692,7 +753,7 @@ local function PopulateTrends(parent)
 
         y = y + 6
         if math.abs(diff) >= 0.5 or math.abs(wastedDiff) >= 60 then
-            local trendFs = sc:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+            local trendFs = AcquireText(sc)
             trendFs:SetPoint("TOPLEFT", sc, "TOPLEFT", 6, -y)
             trendFs:SetWidth(SCROLL_WIDTH - 12)
             trendFs:SetJustifyH("LEFT")
@@ -785,56 +846,58 @@ local function Refresh(parent)
         local sc = parent.scrollChild
         local groups = GetAllGroups(db.alltime or {})
         if #groups > 0 then
-            local y = 0
-            local filterRow = CreateFrame("Frame", nil, sc)
-            filterRow:SetSize(SCROLL_WIDTH, 22)
-            filterRow:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -y)
+            -- The filter row and its buttons are built once and reconfigured
+            -- on each refresh (button texts/handlers are reset, extras hidden).
+            local filterRow = sc.filterRow
+            if not filterRow then
+                filterRow = CreateFrame("Frame", nil, sc)
+                filterRow:SetSize(SCROLL_WIDTH, 22)
+                filterRow:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, 0)
+                filterRow.buttons = {}
 
-            local lbl = filterRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            lbl:SetPoint("LEFT", filterRow, "LEFT", 8, 0)
-            lbl:SetText("Group:")
-            lbl:SetTextColor(0.7, 0.7, 0.7)
+                local lbl = filterRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                lbl:SetPoint("LEFT", filterRow, "LEFT", 8, 0)
+                lbl:SetText("Group:")
+                lbl:SetTextColor(0.7, 0.7, 0.7)
 
-            local xOff = 50
-            -- "All" button
-            local allBtn = CreateFrame("Button", nil, filterRow, "BackdropTemplate")
-            allBtn:SetSize(40, 18)
-            allBtn:SetPoint("LEFT", filterRow, "LEFT", xOff, 0)
-            if not alltimeGroupFilter then
-                ApplyBackdrop(allBtn, 0.1, 0.3, 0.5, 1, 0, 0.6, 1, 1)
-            else
-                ApplyBackdrop(allBtn, 0.2, 0.2, 0.2, 1, 0.4, 0.4, 0.4, 1)
+                sc.filterRow = filterRow
             end
-            local allText = allBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            allText:SetPoint("CENTER")
-            allText:SetText("All")
-            allText:SetTextColor(alltimeGroupFilter and 0.6 or 1, alltimeGroupFilter and 0.6 or 1, alltimeGroupFilter and 0.6 or 1)
-            allBtn:SetScript("OnClick", function()
-                alltimeGroupFilter = nil
-                parent:Refresh()
-            end)
-            xOff = xOff + 44
+            filterRow:Show()
 
-            for _, g in ipairs(groups) do
-                local btn = CreateFrame("Button", nil, filterRow, "BackdropTemplate")
-                local bw = math.max(40, g:len() * 7 + 10)
+            local function setupButton(index, xOff, label, isActive, filterValue)
+                local btn = filterRow.buttons[index]
+                if not btn then
+                    btn = CreateFrame("Button", nil, filterRow, "BackdropTemplate")
+                    btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    btn.text:SetPoint("CENTER")
+                    filterRow.buttons[index] = btn
+                end
+                local bw = math.max(40, label:len() * 7 + 10)
                 btn:SetSize(bw, 18)
+                btn:ClearAllPoints()
                 btn:SetPoint("LEFT", filterRow, "LEFT", xOff, 0)
-                local isActive = alltimeGroupFilter == g
                 if isActive then
                     ApplyBackdrop(btn, 0.1, 0.3, 0.5, 1, 0, 0.6, 1, 1)
                 else
                     ApplyBackdrop(btn, 0.2, 0.2, 0.2, 1, 0.4, 0.4, 0.4, 1)
                 end
-                local btnText = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                btnText:SetPoint("CENTER")
-                btnText:SetText(g)
-                btnText:SetTextColor(isActive and 1 or 0.6, isActive and 1 or 0.6, isActive and 1 or 0.6)
+                btn.text:SetText(label)
+                btn.text:SetTextColor(isActive and 1 or 0.6, isActive and 1 or 0.6, isActive and 1 or 0.6)
                 btn:SetScript("OnClick", function()
-                    alltimeGroupFilter = g
+                    alltimeGroupFilter = filterValue
                     parent:Refresh()
                 end)
-                xOff = xOff + bw + 4
+                btn:Show()
+                return xOff + bw + 4
+            end
+
+            local xOff = 50
+            xOff = setupButton(1, xOff, "All", not alltimeGroupFilter, nil)
+            for gi, g in ipairs(groups) do
+                xOff = setupButton(gi + 1, xOff, g, alltimeGroupFilter == g, g)
+            end
+            for i = #groups + 2, #filterRow.buttons do
+                filterRow.buttons[i]:Hide()
             end
         end
 
