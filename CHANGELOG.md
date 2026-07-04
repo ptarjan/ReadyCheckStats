@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.4
+- Fix: typing "r" in chat now clears people who clicked "Not Ready" and plays the ready ding when everyone's back (previously only worked for people who never clicked anything)
+- Fix: error when clicking Yes on the reset confirmation in the stats window
+- Fix: a Ready click could occasionally be miscounted as Not Ready
+- Fix: one of the perfect-check cheer messages showed a stray "%" sign
+- Update for WoW 12.0.7
+
 ## 1.2.3
 - Make the "Everyone's ready — pull!" message bright green so it's harder to miss in chat
 

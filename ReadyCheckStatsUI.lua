@@ -1,9 +1,11 @@
 --------------------------------------------------------------------------------
 -- ReadyCheckStatsUI.lua — Visual leaderboard window for ReadyCheckStats
--- Standalone file: only touches ReadyCheckShameDB (global) and Print() from core
+-- Standalone file: only touches ReadyCheckShameDB (global) and ns.Print from core
 --------------------------------------------------------------------------------
 
 local addonName, ns = ...
+
+local Print = ns.Print
 
 -- Forward-declare the main frame
 local RCSFrame

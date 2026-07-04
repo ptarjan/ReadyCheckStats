@@ -25,6 +25,7 @@ local groupSize = 0
 local lastCheckDuration = 0
 local lastGroupSize = 0
 local waitingOnPlayers = {} -- people who were AFK/notready, cleared when they say "r"
+local notReadyThisCheck = {} -- people who clicked "Not Ready" this check (removed from pendingMembers)
 
 --------------------------------------------------------------------------------
 -- Helpers
@@ -310,6 +311,7 @@ end
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[ReadyCheckStats]|r " .. msg)
 end
+ns.Print = Print
 
 -- Severity weights (all equal — no multipliers)
 local SEVERITY = { slow = 1, notready = 1, afk = 1, chat = 1 }
@@ -441,6 +443,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
         checkStartTime = now
         waitingForPull = false
         chatReadyMembers = {}
+        notReadyThisCheck = {}
 
         local members = GetGroupMembers()
         groupSize = 0
@@ -489,6 +492,12 @@ frame:SetScript("OnEvent", function(self, event, ...)
         if not name then return end
         if not pendingMembers[name] then return end
 
+        -- A secret isReady is indistinguishable from a Not Ready click. Leave
+        -- the player in pendingMembers and let READY_CHECK_FINISHED resolve
+        -- them via GetReadyCheckStatus. (A real Not Ready click is false,
+        -- which survives SafeValue; only secrets become nil.)
+        if isReady == nil then return end
+
         local elapsed = GetTime() - checkStartTime
 
         if isReady then
@@ -501,6 +510,9 @@ frame:SetScript("OnEvent", function(self, event, ...)
             EnsurePlayer(name)
             IncrementStat(name, "notready", 1)
             pendingMembers[name] = nil
+            -- Remember them so we still wait for their "r" — they were removed
+            -- from pendingMembers so the finish handler can't see them.
+            notReadyThisCheck[name] = true
         end
 
     elseif event == "READY_CHECK_FINISHED" then
@@ -516,6 +528,10 @@ frame:SetScript("OnEvent", function(self, event, ...)
             if status == "notready" then
                 EnsurePlayer(name)
                 IncrementStat(name, "notready", 1)
+                -- We never saw their CONFIRM, but their live status says not
+                -- ready — treat them like a Not Ready clicker so their "r"
+                -- still counts toward the all-clear.
+                notReadyThisCheck[name] = true
             elseif status == "ready" then
                 -- They were still pending but now show "ready" —
                 -- likely a last-second click we missed. Record it
@@ -580,18 +596,14 @@ frame:SetScript("OnEvent", function(self, event, ...)
                 sessionProblems[name].checks = sessionProblems[name].checks + 1
             end
         end
-        -- Not ready clickers
-        for name, unit in pairs(pendingMembers) do
-            local status = GetReadyCheckStatus(unit)
-            status = SafeValue(status)
-            if status == "notready" then
-                if not sessionProblems[name] then
-                    sessionProblems[name] = { checks = 0, worst = "notready" }
-                end
-                sessionProblems[name].checks = sessionProblems[name].checks + 1
-                if SEVERITY["notready"] > SEVERITY[sessionProblems[name].worst] then
-                    sessionProblems[name].worst = "notready"
-                end
+        -- Not ready clickers (removed from pendingMembers at confirm time)
+        for name in pairs(notReadyThisCheck) do
+            if not sessionProblems[name] then
+                sessionProblems[name] = { checks = 0, worst = "notready" }
+            end
+            sessionProblems[name].checks = sessionProblems[name].checks + 1
+            if SEVERITY["notready"] > SEVERITY[sessionProblems[name].worst] then
+                sessionProblems[name].worst = "notready"
             end
         end
         -- AFK
@@ -646,7 +658,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
             local cheers = {
                 "Everyone ready! Let's go!",
                 "Full ready check! You beautiful people!",
-                "100%% ready. This is the dream.",
+                "100% ready. This is the dream.",
                 "All ready, no drama. Chef's kiss.",
                 "Perfect ready check! Is this real life?",
                 "Flawless. Every single one of you.",
@@ -676,12 +688,10 @@ frame:SetScript("OnEvent", function(self, event, ...)
         for name in pairs(afkNames) do
             waitingOnPlayers[name] = true
         end
-        for name, unit in pairs(pendingMembers) do
-            local status = GetReadyCheckStatus(unit)
-            status = SafeValue(status)
-            if status == "notready" then
-                waitingOnPlayers[name] = true
-            end
+        -- Not-ready clickers were removed from pendingMembers at confirm time,
+        -- so pull them from the set we tracked there.
+        for name in pairs(notReadyThisCheck) do
+            waitingOnPlayers[name] = true
         end
 
         pendingMembers = {}
@@ -1159,6 +1169,18 @@ function RunTests()
     local savedProblems = sessionProblems
     local savedStart = sessionStart
     local savedGroupSize = sessionGroupSize
+    local savedActiveCheck = activeCheck
+    local savedCheckStart = checkStartTime
+    local savedCheckGroupSize = groupSize
+    local savedPending = pendingMembers
+    local savedResponseTimes = responseTimes
+    local savedChatReady = chatReadyMembers
+    local savedNotReady = notReadyThisCheck
+    local savedWaitingOn = waitingOnPlayers
+    local savedWaitingForPull = waitingForPull
+    local savedEndTime = readyCheckEndTime
+    local savedLastDuration = lastCheckDuration
+    local savedLastGroupSize = lastGroupSize
 
     Print("--- Running Tests ---")
 
@@ -1168,6 +1190,8 @@ function RunTests()
     end
 
     -- Test 1: FinalizeSession with one AFK in 20-person raid
+    -- All weights are equal (no multipliers); a lone offender is charged the
+    -- full session time × the number of people kept waiting.
     freshDB()
     sessionProblems = { ["TestAFK"] = { checks = 1, worst = "afk" } }
     sessionActive = true
@@ -1175,8 +1199,8 @@ function RunTests()
     sessionGroupSize = 20
     EnsurePlayer("TestAFK")
     FinalizeSession(GetTime())
-    -- 30 * 19 * 5 * 1 = 2850
-    assert_eq(2850, ReadyCheckShameDB.alltime["TestAFK"].timeWasted, "AFK 5x penalty")
+    -- 30s * 19 others = 570
+    assert_eq(570, ReadyCheckShameDB.alltime["TestAFK"].timeWasted, "Lone AFK charged full session")
 
     -- Test 2: Two AFKs both get full penalty
     freshDB()
@@ -1191,11 +1215,12 @@ function RunTests()
     EnsurePlayer("AFK2")
     EnsurePlayer("GoodGuy")
     FinalizeSession(GetTime())
-    assert_eq(2850, ReadyCheckShameDB.alltime["AFK1"].timeWasted, "AFK1 full penalty")
-    assert_eq(2850, ReadyCheckShameDB.alltime["AFK2"].timeWasted, "AFK2 full penalty")
+    -- Fair split: two equal offenders share the blame — (30/2)s * 19 = 285 each
+    assert_eq(285, ReadyCheckShameDB.alltime["AFK1"].timeWasted, "AFK1 fair-split share")
+    assert_eq(285, ReadyCheckShameDB.alltime["AFK2"].timeWasted, "AFK2 fair-split share")
     assert_eq(0, ReadyCheckShameDB.alltime["GoodGuy"].timeWasted, "GoodGuy no penalty")
 
-    -- Test 3: Chat ready — 3x penalty
+    -- Test 3: Chat ready — charged full session, same weight as everything else
     freshDB()
     sessionProblems = { ["ChatGuy"] = { checks = 1, worst = "chat" } }
     sessionActive = true
@@ -1203,10 +1228,11 @@ function RunTests()
     sessionGroupSize = 20
     EnsurePlayer("ChatGuy")
     FinalizeSession(GetTime())
-    -- 45 * 19 * 3 * 1 = 2565
-    assert_eq(2565, ReadyCheckShameDB.alltime["ChatGuy"].timeWasted, "Chat 3x penalty")
+    -- 45s * 19 = 855
+    assert_eq(855, ReadyCheckShameDB.alltime["ChatGuy"].timeWasted, "Chat-ready charged full session")
 
-    -- Test 4: Slow — 1x penalty
+    -- Test 4: Slow responders are charged per-check (in READY_CHECK_FINISHED),
+    -- not at session finalize — FinalizeSession must skip them entirely.
     freshDB()
     sessionProblems = { ["SlowGuy"] = { checks = 1, worst = "slow" } }
     sessionActive = true
@@ -1214,10 +1240,9 @@ function RunTests()
     sessionGroupSize = 20
     EnsurePlayer("SlowGuy")
     FinalizeSession(GetTime())
-    -- 15 * 19 * 1 * 1 = 285
-    assert_eq(285, ReadyCheckShameDB.alltime["SlowGuy"].timeWasted, "Slow 1x penalty")
+    assert_eq(0, ReadyCheckShameDB.alltime["SlowGuy"].timeWasted, "Slow skipped at finalize")
 
-    -- Test 5: NotReady — 2x penalty
+    -- Test 5: NotReady — charged full session, same weight as everything else
     freshDB()
     sessionProblems = { ["Troll"] = { checks = 1, worst = "notready" } }
     sessionActive = true
@@ -1225,10 +1250,10 @@ function RunTests()
     sessionGroupSize = 20
     EnsurePlayer("Troll")
     FinalizeSession(GetTime())
-    -- 30 * 19 * 2 * 1 = 1140
-    assert_eq(1140, ReadyCheckShameDB.alltime["Troll"].timeWasted, "NotReady 2x penalty")
+    -- 30s * 19 = 570
+    assert_eq(570, ReadyCheckShameDB.alltime["Troll"].timeWasted, "NotReady charged full session")
 
-    -- Test 6: Multi-check AFK — multiplied by checks
+    -- Test 6: Failing multiple checks does NOT multiply the session charge
     freshDB()
     sessionProblems = { ["SuperAFK"] = { checks = 3, worst = "afk" } }
     sessionActive = true
@@ -1236,13 +1261,14 @@ function RunTests()
     sessionGroupSize = 20
     EnsurePlayer("SuperAFK")
     FinalizeSession(GetTime())
-    -- 120 * 19 * 5 * 3 = 34200
-    assert_eq(34200, ReadyCheckShameDB.alltime["SuperAFK"].timeWasted, "Multi-check AFK")
+    -- 120s * 19 = 2280 regardless of checks
+    assert_eq(2280, ReadyCheckShameDB.alltime["SuperAFK"].timeWasted, "Checks don't multiply charge")
 
-    -- Test 7: Severity ordering
-    assert_gt(SEVERITY["notready"], SEVERITY["slow"], "notready > slow")
-    assert_gt(SEVERITY["chat"], SEVERITY["notready"], "chat > notready")
-    assert_gt(SEVERITY["afk"], SEVERITY["chat"], "afk > chat")
+    -- Test 7: All severity weights are equal by design (no multipliers)
+    assert_eq(1, SEVERITY["slow"], "slow weight is 1")
+    assert_eq(1, SEVERITY["notready"], "notready weight is 1")
+    assert_eq(1, SEVERITY["chat"], "chat weight is 1")
+    assert_eq(1, SEVERITY["afk"], "afk weight is 1")
 
     -- Test 8: Bigger raid = more waste
     freshDB()
@@ -1263,8 +1289,8 @@ function RunTests()
     FinalizeSession(GetTime())
     local bigWaste = ReadyCheckShameDB.alltime["Big"].timeWasted
 
-    assert_eq(600, smallWaste, "5-person raid (30*4*5*1)")
-    assert_eq(2850, bigWaste, "20-person raid (30*19*5*1)")
+    assert_eq(120, smallWaste, "5-person raid (30s * 4 others)")
+    assert_eq(570, bigWaste, "20-person raid (30s * 19 others)")
     assert_gt(bigWaste, smallWaste, "Bigger raid wastes more")
 
     -- Test 9: Solo group — no crash
@@ -1275,7 +1301,7 @@ function RunTests()
     sessionGroupSize = 1
     EnsurePlayer("Solo")
     FinalizeSession(GetTime())
-    assert_eq(150, ReadyCheckShameDB.alltime["Solo"].timeWasted, "Solo group (30*1*5*1)")
+    assert_eq(30, ReadyCheckShameDB.alltime["Solo"].timeWasted, "Solo group (30s * 1 floor)")
 
     -- Test 10: Empty session — no crash
     freshDB()
@@ -1288,7 +1314,8 @@ function RunTests()
     for _ in pairs(ReadyCheckShameDB.alltime) do count = count + 1 end
     assert_eq(0, count, "Empty session no data")
 
-    -- Test 11: Mid-session joiner charged only for their checks
+    -- Test 11: Check count doesn't change the split — two AFKs with different
+    -- check counts still share the session evenly (no multipliers by design)
     freshDB()
     sessionProblems = {
         ["OG"] = { checks = 3, worst = "afk" },
@@ -1300,9 +1327,9 @@ function RunTests()
     EnsurePlayer("OG")
     EnsurePlayer("Late")
     FinalizeSession(GetTime())
-    assert_eq(34200, ReadyCheckShameDB.alltime["OG"].timeWasted, "OG 3 checks")
-    assert_eq(11400, ReadyCheckShameDB.alltime["Late"].timeWasted, "Late 1 check")
-    assert_gt(ReadyCheckShameDB.alltime["OG"].timeWasted, ReadyCheckShameDB.alltime["Late"].timeWasted, "More checks = more waste")
+    -- (120/2)s * 19 = 1140 each
+    assert_eq(1140, ReadyCheckShameDB.alltime["OG"].timeWasted, "OG fair-split share")
+    assert_eq(1140, ReadyCheckShameDB.alltime["Late"].timeWasted, "Late fair-split share")
 
     -- Test 12: Multiple sessions accumulate
     freshDB()
@@ -1321,8 +1348,29 @@ function RunTests()
     FinalizeSession(GetTime())
     local after2 = ReadyCheckShameDB.alltime["Repeat"].timeWasted
 
-    assert_eq(2850, after1, "First session")
-    assert_eq(5700, after2, "Accumulated across sessions")
+    assert_eq(570, after1, "First session (30s * 19)")
+    assert_eq(1140, after2, "Accumulated across sessions")
+
+    -- Test 13: Not Ready clicker must type "r" before the all-clear (1.2.4)
+    freshDB()
+    sessionProblems = {}
+    sessionActive = true
+    sessionStart = GetTime() - 5
+    sessionGroupSize = 5
+    activeCheck = true
+    checkStartTime = GetTime() - 10
+    groupSize = 5
+    pendingMembers = {}
+    responseTimes = {}
+    chatReadyMembers = {}
+    notReadyThisCheck = { ["NotReadyBob"] = true }
+    local handler = frame:GetScript("OnEvent")
+    handler(frame, "READY_CHECK_FINISHED")
+    assert_eq(true, waitingOnPlayers["NotReadyBob"], "NotReady clicker still waited on after check")
+    assert_eq("notready", sessionProblems["NotReadyBob"] and sessionProblems["NotReadyBob"].worst, "NotReady session problem recorded")
+    -- Their "r" (with realm suffix) clears them and triggers the all-clear
+    handler(frame, "CHAT_MSG_RAID", "r", "NotReadyBob-SomeRealm")
+    assert_eq(nil, waitingOnPlayers["NotReadyBob"], "Chat 'r' clears NotReady clicker")
 
     -- Restore real data
     ReadyCheckShameDB = savedDB
@@ -1330,6 +1378,18 @@ function RunTests()
     sessionProblems = savedProblems
     sessionStart = savedStart
     sessionGroupSize = savedGroupSize
+    activeCheck = savedActiveCheck
+    checkStartTime = savedCheckStart
+    groupSize = savedCheckGroupSize
+    pendingMembers = savedPending
+    responseTimes = savedResponseTimes
+    chatReadyMembers = savedChatReady
+    notReadyThisCheck = savedNotReady
+    waitingOnPlayers = savedWaitingOn
+    waitingForPull = savedWaitingForPull
+    readyCheckEndTime = savedEndTime
+    lastCheckDuration = savedLastDuration
+    lastGroupSize = savedLastGroupSize
 
     Print(string.format("--- %d passed, %d failed ---", passed, failed))
 end
