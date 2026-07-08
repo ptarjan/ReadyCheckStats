@@ -26,6 +26,7 @@ local lastCheckDuration = 0
 local lastGroupSize = 0
 local waitingOnPlayers = {} -- people who were AFK/notready, cleared when they say "r"
 local notReadyThisCheck = {} -- people who clicked "Not Ready" this check (removed from pendingMembers)
+local preReadied = {} -- people who typed "r" while the check was still running
 
 --------------------------------------------------------------------------------
 -- Helpers
@@ -444,6 +445,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
         waitingForPull = false
         chatReadyMembers = {}
         notReadyThisCheck = {}
+        preReadied = {}
 
         local members = GetGroupMembers()
         groupSize = 0
@@ -683,15 +685,37 @@ frame:SetScript("OnEvent", function(self, event, ...)
         lastGroupSize = groupSize
         waitingForPull = true
 
-        -- Remember who we're still waiting on (AFK/notready from this check)
+        -- Remember who we're still waiting on (AFK/notready from this check).
+        -- Anyone who already typed "r" while the check was running counts as
+        -- chat-ready the moment it ends instead of being waited on again.
         waitingOnPlayers = {}
+        local anyPreReadied = false
+        local function addWaiter(name)
+            if preReadied[name] then
+                anyPreReadied = true
+                chatReadyMembers[name] = 0
+                if not sessionProblems[name] then
+                    sessionProblems[name] = { checks = 0, worst = "chat" }
+                end
+                sessionProblems[name].checks = sessionProblems[name].checks + 1
+            else
+                waitingOnPlayers[name] = true
+            end
+        end
         for name in pairs(afkNames) do
-            waitingOnPlayers[name] = true
+            addWaiter(name)
         end
         -- Not-ready clickers were removed from pendingMembers at confirm time,
         -- so pull them from the set we tracked there.
         for name in pairs(notReadyThisCheck) do
-            waitingOnPlayers[name] = true
+            addWaiter(name)
+        end
+        -- If the only holdouts already said "r" mid-check, fire the all-clear now.
+        if anyPreReadied and next(waitingOnPlayers) == nil then
+            C_Timer.After(0, function()
+                Print("|cff00ff00Everyone's ready — pull!|r")
+                PlaySound(8959) -- raid warning sound
+            end)
         end
 
         pendingMembers = {}
@@ -705,7 +729,9 @@ frame:SetScript("OnEvent", function(self, event, ...)
         or event == "CHAT_MSG_PARTY" or event == "CHAT_MSG_PARTY_LEADER"
         or event == "CHAT_MSG_SAY" then
 
-        if not waitingForPull then return end
+        -- Chat matters while we're waiting for the pull AND while a check is
+        -- still running (an early "r" counts once the check ends).
+        if not waitingForPull and not activeCheck then return end
 
         local msg, sender = ...
         msg = SafeValue(msg)
@@ -722,7 +748,15 @@ frame:SetScript("OnEvent", function(self, event, ...)
             or string.find(padded, "%Where%W")
             or string.find(padded, "%Wback%W") then
             local name = StripRealm(sender)
-            if name and not chatReadyMembers[name] and waitingOnPlayers[name] then
+            if activeCheck and not waitingForPull then
+                -- "r" during the check itself: remember it so the finish
+                -- handler doesn't wait on them — they've already announced
+                -- they're ready. (Only matters for people who clicked Not
+                -- Ready or haven't responded; anyone else is harmless here.)
+                if name and (pendingMembers[name] or notReadyThisCheck[name]) then
+                    preReadied[name] = true
+                end
+            elseif name and not chatReadyMembers[name] and waitingOnPlayers[name] then
                 local elapsed = GetTime() - readyCheckEndTime
                 chatReadyMembers[name] = elapsed
                 if not sessionProblems[name] then
@@ -746,14 +780,16 @@ frame:SetScript("OnEvent", function(self, event, ...)
             end
         end
 
-        if string.find(shortMsg, "pull in") or string.find(shortMsg, "pull timer") then
-            MarkWaitersReady()
-            FinalizeSession(GetTime())
-            waitingForPull = false
-        end
-        if string.find(shortMsg, "break") then
-            FinalizeSession(GetTime())
-            waitingForPull = false
+        if waitingForPull then
+            if string.find(shortMsg, "pull in") or string.find(shortMsg, "pull timer") then
+                MarkWaitersReady()
+                FinalizeSession(GetTime())
+                waitingForPull = false
+            end
+            if string.find(shortMsg, "break") then
+                FinalizeSession(GetTime())
+                waitingForPull = false
+            end
         end
     end
 end)
@@ -1176,6 +1212,7 @@ function RunTests()
     local savedResponseTimes = responseTimes
     local savedChatReady = chatReadyMembers
     local savedNotReady = notReadyThisCheck
+    local savedPreReadied = preReadied
     local savedWaitingOn = waitingOnPlayers
     local savedWaitingForPull = waitingForPull
     local savedEndTime = readyCheckEndTime
@@ -1364,6 +1401,7 @@ function RunTests()
     responseTimes = {}
     chatReadyMembers = {}
     notReadyThisCheck = { ["NotReadyBob"] = true }
+    preReadied = {}
     local handler = frame:GetScript("OnEvent")
     handler(frame, "READY_CHECK_FINISHED")
     assert_eq(true, waitingOnPlayers["NotReadyBob"], "NotReady clicker still waited on after check")
@@ -1371,6 +1409,27 @@ function RunTests()
     -- Their "r" (with realm suffix) clears them and triggers the all-clear
     handler(frame, "CHAT_MSG_RAID", "r", "NotReadyBob-SomeRealm")
     assert_eq(nil, waitingOnPlayers["NotReadyBob"], "Chat 'r' clears NotReady clicker")
+
+    -- Test 14: typing "r" while the check is still running counts (1.2.5)
+    freshDB()
+    sessionProblems = {}
+    sessionActive = true
+    sessionStart = GetTime() - 5
+    sessionGroupSize = 5
+    activeCheck = true
+    waitingForPull = false
+    checkStartTime = GetTime() - 10
+    groupSize = 5
+    pendingMembers = {}
+    responseTimes = {}
+    chatReadyMembers = {}
+    notReadyThisCheck = { ["EagerEddie"] = true }
+    preReadied = {}
+    handler(frame, "CHAT_MSG_RAID", "r", "EagerEddie-SomeRealm")
+    assert_eq(true, preReadied["EagerEddie"], "Mid-check 'r' recorded")
+    handler(frame, "READY_CHECK_FINISHED")
+    assert_eq(nil, waitingOnPlayers["EagerEddie"], "Pre-readied player not waited on")
+    assert_eq(0, chatReadyMembers["EagerEddie"], "Pre-readied counted as chat-ready at 0s")
 
     -- Restore real data
     ReadyCheckShameDB = savedDB
@@ -1385,6 +1444,7 @@ function RunTests()
     responseTimes = savedResponseTimes
     chatReadyMembers = savedChatReady
     notReadyThisCheck = savedNotReady
+    preReadied = savedPreReadied
     waitingOnPlayers = savedWaitingOn
     waitingForPull = savedWaitingForPull
     readyCheckEndTime = savedEndTime

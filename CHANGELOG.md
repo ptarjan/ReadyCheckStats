@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.5
+- Typing "r" (or "rdy", "back", etc.) while the ready check is still running now counts — you no longer have to say it again after the check ends
+- If everyone who missed the check already said "r" during it, the "Everyone's ready — pull!" ding fires the moment the check ends
+
 ## 1.2.4
 - Fix: typing "r" in chat now clears people who clicked "Not Ready" and plays the ready ding when everyone's back (previously only worked for people who never clicked anything)
 - Fix: error when clicking Yes on the reset confirmation in the stats window
