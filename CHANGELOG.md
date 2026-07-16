@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.2.6
+- Ready for WoW 12.1.0
+
 ## 1.2.5
 - Typing "r" (or "rdy", "back", etc.) while the ready check is still running now counts — you no longer have to say it again after the check ends
 - If everyone who missed the check already said "r" during it, the "Everyone's ready — pull!" ding fires the moment the check ends
