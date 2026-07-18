@@ -346,6 +346,35 @@ local function EnsurePlayer(name)
     end
 end
 
+-- Every stat mutation is appended to a raw event log (always on, like the
+-- CauldronTracker debug log). /rcs audit independently re-sums the log and
+-- diffs it against the stored totals, so the displayed numbers are
+-- verifiable rather than trusted.
+local AUDIT_CAP = 3000
+
+local function AuditLog(name, field, amount, group)
+    local log = ReadyCheckShameDB.auditLog
+    if not log then
+        log = {}
+        ReadyCheckShameDB.auditLog = log
+    end
+    log[#log + 1] = {
+        d = ReadyCheckShameDB.tonight.date,
+        n = name,
+        f = field,
+        a = math.floor(amount * 100 + 0.5) / 100,
+        g = group,
+    }
+    if #log > AUDIT_CAP then
+        -- trim in chunks; remember the date we trimmed into so the audit
+        -- can warn instead of reporting false mismatches
+        ReadyCheckShameDB.auditTrimmedDate = log[500] and log[500].d
+        for _ = 1, 500 do
+            table.remove(log, 1)
+        end
+    end
+end
+
 local function IncrementStat(name, field, amount)
     amount = amount or 1
     local d = ReadyCheckShameDB.alltime[name]
@@ -356,6 +385,52 @@ local function IncrementStat(name, field, amount)
     local group = ReadyCheckShameDB.tonight.group
     if group and d.byGroup and d.byGroup[group] then
         d.byGroup[group][field] = (d.byGroup[group][field] or 0) + amount
+    end
+    AuditLog(name, field, amount, group)
+end
+
+local AUDIT_FIELDS = { "seen", "notready", "afk", "totalResponseTime", "responseCount", "timeWasted" }
+
+local function RunAudit()
+    local log = ReadyCheckShameDB.auditLog or {}
+    local today = ReadyCheckShameDB.tonight.date
+    if ReadyCheckShameDB.auditTrimmedDate == today then
+        Print("Audit log rotated mid-night (very long session) — audit would be incomplete, skipping.")
+        return
+    end
+    local sums = {}
+    local eventCount = 0
+    for _, entry in ipairs(log) do
+        if entry.d == today then
+            eventCount = eventCount + 1
+            local p = sums[entry.n]
+            if not p then
+                p = {}
+                sums[entry.n] = p
+            end
+            p[entry.f] = (p[entry.f] or 0) + entry.a
+        end
+    end
+    local players = ReadyCheckShameDB.tonight.players or {}
+    local names = {}
+    for n in pairs(players) do names[n] = true end
+    for n in pairs(sums) do names[n] = true end
+    local mismatches = 0
+    for n in pairs(names) do
+        local stored = players[n] or {}
+        local summed = sums[n] or {}
+        for _, f in ipairs(AUDIT_FIELDS) do
+            local a, b = stored[f] or 0, summed[f] or 0
+            if math.abs(a - b) > 0.5 then
+                mismatches = mismatches + 1
+                Print(string.format("MISMATCH %s.%s: stored %.1f vs %.1f recomputed from the event log", n, f, a, b))
+            end
+        end
+    end
+    if mismatches == 0 then
+        Print(string.format("Audit OK — %d logged events independently reproduce tonight's numbers.", eventCount))
+    else
+        Print(string.format("Audit FAILED — %d mismatch(es) across %d logged events. The mismatched numbers cannot be trusted; please report.", mismatches, eventCount))
     end
 end
 
@@ -1197,6 +1272,17 @@ SlashCmdList["READYCHECKSTATS"] = function(rawMsg)
         ResetData()
     elseif msg == "reset tonight" then
         ReadyCheckShameDB.tonight = { date = Today(), players = {} }
+        -- drop tonight's audit events too, or /rcs audit would compare
+        -- them against the freshly zeroed totals and report mismatches
+        if ReadyCheckShameDB.auditLog then
+            local kept = {}
+            for _, entry in ipairs(ReadyCheckShameDB.auditLog) do
+                if entry.d ~= Today() then
+                    kept[#kept + 1] = entry
+                end
+            end
+            ReadyCheckShameDB.auditLog = kept
+        end
         Print("Tonight's data has been reset.")
     elseif msg == "share" then
         ShowLeaderboard(true, "tonight")
@@ -1212,12 +1298,15 @@ SlashCmdList["READYCHECKSTATS"] = function(rawMsg)
         ShowMVP(false)
     elseif msg == "share mvp" then
         ShowMVP(true)
+    elseif msg == "audit" then
+        RunAudit()
     elseif msg == "test" then
         RunTests()
     elseif msg == "help" then
         Print("Commands:")
         Print("  /rcs — open leaderboard window")
         Print("  /rcs text — tonight's leaderboard (chat)")
+        Print("  /rcs audit — verify tonight's numbers against the raw event log")
         Print("  /rcs all — all-time leaderboard")
         Print("  /rcs mvp — tonight's MVPs (positive only)")
         Print("  /rcs trend — raid night trends over time")
