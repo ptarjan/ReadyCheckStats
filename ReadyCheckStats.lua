@@ -346,6 +346,11 @@ local function EnsurePlayer(name)
     end
 end
 
+local function Print(msg)
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[ReadyCheckStats]|r " .. msg)
+end
+ns.Print = Print
+
 -- Every stat mutation is appended to a raw event log (always on, like the
 -- CauldronTracker debug log). /rcs audit independently re-sums the log and
 -- diffs it against the stored totals, so the displayed numbers are
@@ -443,11 +448,6 @@ local function RecordResponseTime(name, elapsed)
     IncrementStat(name, "totalResponseTime", elapsed)
     IncrementStat(name, "responseCount", 1)
 end
-
-local function Print(msg)
-    DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[ReadyCheckStats]|r " .. msg)
-end
-ns.Print = Print
 
 -- Severity weights (all equal — no multipliers)
 local SEVERITY = { slow = 1, notready = 1, afk = 1, chat = 1 }
