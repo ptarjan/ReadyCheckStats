@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.7
+- Group filter buttons are now ordered by how often you raid with each group, so your usual group comes first
+- When there are more groups than fit on the row, scroll through them with the mouse wheel
+
 ## 1.2.6
 - Ready for WoW 12.1.0
 

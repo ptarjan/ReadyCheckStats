@@ -3,7 +3,7 @@
 ## IconTexture: Interface\Icons\Achievement_GuildPerk_EverybodysFriend
 ## Notes: Ready check tracker with MVPs, response times, and raid trends
 ## Author: ptarjan
-## Version: 1.2.6
+## Version: 1.2.7
 ## SavedVariables: ReadyCheckShameDB
 ## X-Curse-Project-ID: 1512694
 

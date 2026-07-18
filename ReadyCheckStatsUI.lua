@@ -109,21 +109,34 @@ local function BuildEntries(playerTable, groupFilter)
     return entries
 end
 
-local function GetAllGroups(playerTable)
-    local groups = {}
-    if not playerTable then return groups end
-    for _, data in pairs(playerTable) do
-        if data.groups then
-            for g in pairs(data.groups) do
-                groups[g] = true
+local function GetAllGroups(playerTable, history)
+    local counts = {}
+    if playerTable then
+        for _, data in pairs(playerTable) do
+            if data.groups then
+                for g in pairs(data.groups) do
+                    counts[g] = counts[g] or 0
+                end
             end
         end
     end
+    -- frequency = how many recorded nights each group appears in, so the
+    -- groups you actually raid with sort to the front of the filter row
+    for _, h in ipairs(history or {}) do
+        if h.group then
+            counts[h.group] = (counts[h.group] or 0) + 1
+        end
+    end
     local sorted = {}
-    for g in pairs(groups) do
+    for g in pairs(counts) do
         table.insert(sorted, g)
     end
-    table.sort(sorted)
+    table.sort(sorted, function(a, b)
+        if counts[a] ~= counts[b] then
+            return counts[a] > counts[b]
+        end
+        return a < b
+    end)
     return sorted
 end
 
@@ -844,25 +857,42 @@ local function Refresh(parent)
     elseif activeTab == 2 then
         -- All-Time with group filter
         local sc = parent.scrollChild
-        local groups = GetAllGroups(db.alltime or {})
+        local groups = GetAllGroups(db.alltime or {}, db.history)
         if #groups > 0 then
             -- The filter row and its buttons are built once and reconfigured
             -- on each refresh (button texts/handlers are reset, extras hidden).
             local filterRow = sc.filterRow
             if not filterRow then
-                filterRow = CreateFrame("Frame", nil, sc)
-                filterRow:SetSize(SCROLL_WIDTH, 22)
-                filterRow:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, 0)
-                filterRow.buttons = {}
-
-                local lbl = filterRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                lbl:SetPoint("LEFT", filterRow, "LEFT", 8, 0)
+                -- the label lives on sc, outside the row, so the clipped
+                -- button strip can scroll underneath without covering it
+                local lbl = sc:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                lbl:SetPoint("TOPLEFT", sc, "TOPLEFT", 8, -6)
                 lbl:SetText("Group:")
                 lbl:SetTextColor(0.7, 0.7, 0.7)
+
+                filterRow = CreateFrame("Frame", nil, sc)
+                filterRow:SetSize(SCROLL_WIDTH - 50, 22)
+                filterRow:SetPoint("TOPLEFT", sc, "TOPLEFT", 50, 0)
+                filterRow:SetClipsChildren(true)
+                filterRow.buttons = {}
+                filterRow.label = lbl
+                filterRow.scrollOffset = 0
+
+                -- more groups than fit: mouse wheel over the row scrolls it
+                filterRow:EnableMouseWheel(true)
+                filterRow:SetScript("OnMouseWheel", function(self, delta)
+                    local maxOff = math.max(0, (self.totalWidth or 0) - self:GetWidth())
+                    local newOff = math.max(0, math.min(maxOff, (self.scrollOffset or 0) - delta * 80))
+                    if newOff ~= self.scrollOffset then
+                        self.scrollOffset = newOff
+                        parent:Refresh()
+                    end
+                end)
 
                 sc.filterRow = filterRow
             end
             filterRow:Show()
+            filterRow.label:Show()
 
             local function setupButton(index, xOff, label, isActive, filterValue)
                 local btn = filterRow.buttons[index]
@@ -875,7 +905,7 @@ local function Refresh(parent)
                 local bw = math.max(40, label:len() * 7 + 10)
                 btn:SetSize(bw, 18)
                 btn:ClearAllPoints()
-                btn:SetPoint("LEFT", filterRow, "LEFT", xOff, 0)
+                btn:SetPoint("LEFT", filterRow, "LEFT", xOff - (filterRow.scrollOffset or 0), 0)
                 if isActive then
                     ApplyBackdrop(btn, 0.1, 0.3, 0.5, 1, 0, 0.6, 1, 1)
                 else
@@ -891,11 +921,17 @@ local function Refresh(parent)
                 return xOff + bw + 4
             end
 
-            local xOff = 50
+            -- clamp before laying out, in case groups shrank while scrolled
+            local maxOff = math.max(0, (filterRow.totalWidth or 0) - filterRow:GetWidth())
+            if (filterRow.scrollOffset or 0) > maxOff then
+                filterRow.scrollOffset = maxOff
+            end
+            local xOff = 0
             xOff = setupButton(1, xOff, "All", not alltimeGroupFilter, nil)
             for gi, g in ipairs(groups) do
                 xOff = setupButton(gi + 1, xOff, g, alltimeGroupFilter == g, g)
             end
+            filterRow.totalWidth = xOff
             for i = #groups + 2, #filterRow.buttons do
                 filterRow.buttons[i]:Hide()
             end
