@@ -225,36 +225,9 @@ local function InitDB()
     if not ReadyCheckShameDB.byGroupSplitDone then
         ReadyCheckShameDB.byGroupSplitDone = true
         local FIELDS = { "seen", "notready", "afk", "totalResponseTime", "responseCount", "timeWasted" }
-        local nights = {} -- name -> { total = n, [group] = n }
-        for _, h in ipairs(ReadyCheckShameDB.history) do
-            if h.group and h.playerNames then
-                for _, name in ipairs(h.playerNames) do
-                    local n = nights[name]
-                    if not n then
-                        n = { total = 0 }
-                        nights[name] = n
-                    end
-                    n[h.group] = (n[h.group] or 0) + 1
-                    n.total = n.total + 1
-                end
-            end
-        end
+        local nights = ns.Math.NightsPerGroup(ReadyCheckShameDB.history)
         for name, d in pairs(ReadyCheckShameDB.alltime) do
-            local shares = {} -- group -> fraction
-            local n = nights[name]
-            if n and n.total > 0 then
-                for g, c in pairs(n) do
-                    if g ~= "total" then
-                        shares[g] = c / n.total
-                    end
-                end
-            elseif d.groups and next(d.groups) then
-                local count = 0
-                for _ in pairs(d.groups) do count = count + 1 end
-                for g in pairs(d.groups) do
-                    shares[g] = 1 / count
-                end
-            end
+            local shares = ns.Math.GroupFractions(nights[name], d.groups)
             if next(shares) then
                 d.byGroup = d.byGroup or {}
                 for g, frac in pairs(shares) do
@@ -458,43 +431,19 @@ local function FinalizeSession(pullTime)
     local totalSessionTime = pullTime - sessionStart
     local gs = math.max(sessionGroupSize - 1, 1)
 
-    -- Fair split for session-level problems (AFK, notready, chat-ready)
-    -- Slow responders already charged per-check with fair split
-    local sessionList = {}
+    -- Fair split for session-level problems (AFK, notready, chat-ready).
+    -- Chat-ready players are charged only until they typed "r" (math in
+    -- ReadyCheckStats_Math.lua, unit-tested).
+    local problems = {}
     for name, problem in pairs(sessionProblems) do
         if problem.worst ~= "slow" then
-            EnsurePlayer(name)
-            local weight = SEVERITY[problem.worst] or 1
-            -- Charge chat-ready players only until they typed "r"; charging
-            -- the full first-check-to-pull span billed the raid leader's
-            -- dawdle time to players who were long since ready
-            local readyAt = chatReadyMembers[name]
-            local personTime
-            if readyAt then
-                -- readyAt is seconds after the check ended, so their real
-                -- delay from session start is roughly check + readyAt
-                personTime = math.min(totalSessionTime, lastCheckDuration + readyAt)
-            else
-                personTime = totalSessionTime
-            end
-            table.insert(sessionList, { name = name, time = personTime * weight, rawTime = personTime })
+            problems[name] = SEVERITY[problem.worst] or 1
         end
     end
-
-    -- Sort by weighted time and do fair split
-    table.sort(sessionList, function(a, b) return a.time < b.time end)
-    if #sessionList > 0 then
-        local prevTime = 0
-        for i, entry in ipairs(sessionList) do
-            local interval = entry.time - prevTime
-            local numStillWaiting = #sessionList - i + 1
-            local share = (interval / numStillWaiting) * gs
-            for j = i, #sessionList do
-                EnsurePlayer(sessionList[j].name)
-                IncrementStat(sessionList[j].name, "timeWasted", share)
-            end
-            prevTime = entry.time
-        end
+    local shares = ns.Math.SessionShares(problems, chatReadyMembers, lastCheckDuration, totalSessionTime, gs)
+    for name, share in pairs(shares) do
+        EnsurePlayer(name)
+        IncrementStat(name, "timeWasted", share)
     end
 
     if next(sessionProblems) then
@@ -686,45 +635,12 @@ frame:SetScript("OnEvent", function(self, event, ...)
             end
         end
 
-        -- Calculate fair time wasted for slow responders this check
-        -- Sort all response times, find median, then split delay fairly
-        local sortedTimes = {}
-        for _, t in pairs(responseTimes) do
-            table.insert(sortedTimes, t)
-        end
-        table.sort(sortedTimes)
-        local medianTime = 0
-        if #sortedTimes > 0 then
-            local mid = math.ceil(#sortedTimes / 2)
-            medianTime = sortedTimes[mid]
-        end
-
-        -- Get slow responders (above median) sorted by time
-        local slowList = {}
-        for name, t in pairs(responseTimes) do
-            if t > medianTime and t > 5 then
-                table.insert(slowList, { name = name, time = t })
-            end
-        end
-        table.sort(slowList, function(a, b) return a.time < b.time end)
-
-        -- Fair split: for each interval, divide among people still slow
-        if #slowList > 0 then
-            local gs = math.max(groupSize - 1, 1)
-            local prevTime = medianTime
-            for i, entry in ipairs(slowList) do
-                -- From prevTime to entry.time, there are (#slowList - i + 1) people still slow
-                -- Each gets (interval / numStillSlow) * raidSize
-                local interval = entry.time - prevTime
-                local numStillSlow = #slowList - i + 1
-                local share = (interval / numStillSlow) * gs
-                -- Charge this share to everyone from index i onward
-                for j = i, #slowList do
-                    EnsurePlayer(slowList[j].name)
-                    IncrementStat(slowList[j].name, "timeWasted", share)
-                end
-                prevTime = entry.time
-            end
+        -- Charge slow responders their fair share of the delay beyond the
+        -- median (math in ReadyCheckStats_Math.lua, unit-tested)
+        local slowShares, medianTime = ns.Math.SlowShares(responseTimes, groupSize)
+        for name, share in pairs(slowShares) do
+            EnsurePlayer(name)
+            IncrementStat(name, "timeWasted", share)
         end
 
         -- Track session problems for AFK/notready (wasted calculated at pull time)

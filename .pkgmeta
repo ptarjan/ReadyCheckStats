@@ -1,3 +1,6 @@
 package-as: ReadyCheckStats
 project-id: 1512694
 manual-changelog: CHANGELOG.md
+
+ignore:
+  - tests
