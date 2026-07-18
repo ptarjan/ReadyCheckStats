@@ -17,11 +17,6 @@ local POS_KEY = "uiPosition"
 -- Utilities
 --------------------------------------------------------------------------------
 
-local function SafeValue(val)
-    if issecretvalue and issecretvalue(val) then return nil end
-    return val
-end
-
 local function Today()
     return date("%Y-%m-%d")
 end
@@ -469,7 +464,7 @@ local function ClearScrollContent(parent)
     local sc = parent.scrollChild
     if sc.pools then
         for _, pool in pairs(sc.pools) do
-            for i = #pool.active, 1, -1 do
+            for _ = #pool.active, 1, -1 do
                 local f = table.remove(pool.active)
                 f:Hide()
                 table.insert(pool.free, f)
@@ -477,7 +472,7 @@ local function ClearScrollContent(parent)
         end
     end
     if sc.fsPool then
-        for i = #sc.fsPool.active, 1, -1 do
+        for _ = #sc.fsPool.active, 1, -1 do
             local fs = table.remove(sc.fsPool.active)
             fs:Hide()
             table.insert(sc.fsPool.free, fs)
@@ -781,7 +776,6 @@ local function PopulateTrends(parent)
             elseif diff <= -0.5 then
                 table.insert(parts, string.format("|cffff0000Trending down... %.0f%% perfect rate|r", diff))
             end
-            local wastedDiff = (curr.timeWasted or 0) - (prev.timeWasted or 0)
             if wastedDiff < -60 then
                 table.insert(parts, string.format("|cff00ff00Less time wasted! %.1fm saved|r", -wastedDiff / 60))
             elseif wastedDiff > 60 then
@@ -975,6 +969,9 @@ local function InitUI()
     if RCSFrame then return RCSFrame end
 
     RCSFrame = CreateMainFrame()
+    -- Export for the core file: it live-refreshes the window during ready
+    -- checks, and RCSFrame itself is local to this file
+    ns.RCSFrame = RCSFrame
     CreateTabs(RCSFrame)
     CreateScrollArea(RCSFrame)
 

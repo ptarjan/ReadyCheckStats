@@ -150,6 +150,9 @@ local function EmptyStats()
     }
 end
 
+-- forward declarations: defined later, called from InitDB/slash handler
+local ArchiveTonight, RunTests
+
 local function InitDB()
     if not ReadyCheckShameDB.alltime then
         -- Migrate old flat format to new structure
@@ -305,9 +308,7 @@ end
 function ArchiveTonight()
     local tonight = ReadyCheckShameDB.tonight
     -- Only archive if there was actual data
-    local hasData = false
-    for _ in pairs(tonight.players) do hasData = true; break end
-    if not hasData then return end
+    if next(tonight.players) == nil then return end
 
     local summary = SummarizeNight(tonight)
     -- Store player names for group tagging backfill
@@ -617,8 +618,8 @@ frame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "READY_CHECK_CONFIRM" then
         if not activeCheck then return end
         -- Auto-refresh UI if open
-        if RCSFrame and RCSFrame:IsShown() and RCSFrame.RefreshContent then
-            C_Timer.After(0, function() RCSFrame:RefreshContent() end)
+        if ns.RCSFrame and ns.RCSFrame:IsShown() and ns.RCSFrame.RefreshContent then
+            C_Timer.After(0, function() ns.RCSFrame:RefreshContent() end)
         end
 
         local unit, isReady = ...
@@ -858,8 +859,8 @@ frame:SetScript("OnEvent", function(self, event, ...)
         pendingMembers = {}
 
         -- Auto-refresh UI if open
-        if RCSFrame and RCSFrame:IsShown() and RCSFrame.RefreshContent then
-            RCSFrame:RefreshContent()
+        if ns.RCSFrame and ns.RCSFrame:IsShown() and ns.RCSFrame.RefreshContent then
+            ns.RCSFrame:RefreshContent()
         end
 
     elseif event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER"
@@ -905,8 +906,8 @@ frame:SetScript("OnEvent", function(self, event, ...)
                 end
                 -- Remove from waiting list and check if everyone's ready
                 waitingOnPlayers[name] = nil
-                if RCSFrame and RCSFrame:IsShown() and RCSFrame.RefreshContent then
-                    RCSFrame:RefreshContent()
+                if ns.RCSFrame and ns.RCSFrame:IsShown() and ns.RCSFrame.RefreshContent then
+                    ns.RCSFrame:RefreshContent()
                 end
                 if next(waitingOnPlayers) == nil then
                     C_Timer.After(0, function()
@@ -1182,7 +1183,6 @@ local function ShowTrend(toChat)
         local prev = all[#all - 1]
         local curr = all[#all]
         local diff = curr.perfectRate - prev.perfectRate
-        local timeDiff = curr.avgTime - prev.avgTime
         if diff >= 0.5 then
             out(string.format("Trending up! +%.0f%% perfect rate vs last time", diff))
         elseif diff <= -0.5 then
