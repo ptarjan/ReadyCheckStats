@@ -926,7 +926,7 @@ local function ProcessChatQueue()
         return
     end
     local item = table.remove(chatQueue, 1)
-    SendChatMessage(item.msg, item.channel)
+    C_ChatInfo.SendChatMessage(item.msg, item.channel)
     C_Timer.After(0.5, ProcessChatQueue)
 end
 

@@ -999,7 +999,7 @@ local function ToggleUI()
     if f:IsShown() then
         f:Hide()
     else
-        f:Refresh(f)
+        f:Refresh()
         f:Show()
     end
 end
