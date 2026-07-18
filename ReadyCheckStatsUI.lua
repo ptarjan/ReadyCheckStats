@@ -77,29 +77,33 @@ local function BuildEntries(playerTable, groupFilter)
     if not playerTable then return {} end
     local entries = {}
     for name, data in pairs(playerTable) do
-        if data and data.seen and data.seen > 0 then
-            -- Apply group filter if set
-            if groupFilter and data.groups and not data.groups[groupFilter] then
-                -- skip: player not in this group
-            else
-                local failures = (data.notready or 0) + (data.afk or 0)
-                local avgTime = 0
-                if data.responseCount and data.responseCount > 0 then
-                    avgTime = data.totalResponseTime / data.responseCount
-                end
-                if failures > data.seen then failures = data.seen end
-                local failPct = data.seen > 0 and (failures / data.seen * 100) or 0
-                table.insert(entries, {
-                    name     = name,
-                    seen     = data.seen,
-                    notready = data.notready or 0,
-                    afk      = data.afk or 0,
-                    failures = failures,
-                    failPct  = failPct,
-                    avgTime  = avgTime,
-                    timeWasted = data.timeWasted or 0,
-                })
+        -- With a group filter, read that group's own stat bucket so the
+        -- numbers reflect nights with THAT group, not all-time totals.
+        -- Migrated buckets hold fractional counts; round for display.
+        if groupFilter then
+            data = data and data.byGroup and data.byGroup[groupFilter]
+        end
+        if data and data.seen and data.seen >= 0.5 then
+            local seen = math.floor(data.seen + 0.5)
+            local notready = math.floor((data.notready or 0) + 0.5)
+            local afk = math.floor((data.afk or 0) + 0.5)
+            local failures = notready + afk
+            local avgTime = 0
+            if data.responseCount and data.responseCount > 0 then
+                avgTime = data.totalResponseTime / data.responseCount
             end
+            if failures > seen then failures = seen end
+            local failPct = seen > 0 and (failures / seen * 100) or 0
+            table.insert(entries, {
+                name     = name,
+                seen     = seen,
+                notready = notready,
+                afk      = afk,
+                failures = failures,
+                failPct  = failPct,
+                avgTime  = avgTime,
+                timeWasted = data.timeWasted or 0,
+            })
         end
     end
     table.sort(entries, function(a, b)
@@ -587,7 +591,7 @@ local PLAYER_COLS = {
     { label = "NR",         x = 180, width = 30,  justify = "LEFT",  sortKey = "notready" },
     { label = "AFK",        x = 220, width = 30,  justify = "LEFT",  sortKey = "afk" },
     { label = "Avg",        x = 260, width = 50,  justify = "LEFT",  sortKey = "avgTime" },
-    { label = "Wasted",     x = 320, width = 70,  justify = "LEFT",  sortKey = "timeWasted" },
+    { label = "Raid-time", x = 320, width = 70,  justify = "LEFT",  sortKey = "timeWasted" },
     { label = "Fail %",     x = 400, width = 55,  justify = "LEFT",  sortKey = "failPct" },
 }
 
@@ -669,7 +673,7 @@ local TREND_COLS = {
     { label = "Checks",    x = 194, width = 45,  justify = "RIGHT" },
     { label = "Perfect %", x = 250, width = 55,  justify = "RIGHT" },
     { label = "Avg",       x = 312, width = 45,  justify = "RIGHT" },
-    { label = "Wasted",    x = 364, width = 70,  justify = "RIGHT" },
+    { label = "Raid-time", x = 364, width = 70,  justify = "RIGHT" },
 }
 
 local function BuildTrendRow(row)

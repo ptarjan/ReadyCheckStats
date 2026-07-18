@@ -213,6 +213,57 @@ local function InitDB()
             end
         end
     end
+
+    -- One-time split of pre-existing totals into per-group buckets.
+    -- Exact per-group attribution isn't recoverable from old data, so
+    -- distribute each player's numbers proportionally to how many recorded
+    -- nights they had with each group (even split across tags as fallback).
+    -- New stats accrue exactly per group from here on.
+    if not ReadyCheckShameDB.byGroupSplitDone then
+        ReadyCheckShameDB.byGroupSplitDone = true
+        local FIELDS = { "seen", "notready", "afk", "totalResponseTime", "responseCount", "timeWasted" }
+        local nights = {} -- name -> { total = n, [group] = n }
+        for _, h in ipairs(ReadyCheckShameDB.history) do
+            if h.group and h.playerNames then
+                for _, name in ipairs(h.playerNames) do
+                    local n = nights[name]
+                    if not n then
+                        n = { total = 0 }
+                        nights[name] = n
+                    end
+                    n[h.group] = (n[h.group] or 0) + 1
+                    n.total = n.total + 1
+                end
+            end
+        end
+        for name, d in pairs(ReadyCheckShameDB.alltime) do
+            local shares = {} -- group -> fraction
+            local n = nights[name]
+            if n and n.total > 0 then
+                for g, c in pairs(n) do
+                    if g ~= "total" then
+                        shares[g] = c / n.total
+                    end
+                end
+            elseif d.groups and next(d.groups) then
+                local count = 0
+                for _ in pairs(d.groups) do count = count + 1 end
+                for g in pairs(d.groups) do
+                    shares[g] = 1 / count
+                end
+            end
+            if next(shares) then
+                d.byGroup = d.byGroup or {}
+                for g, frac in pairs(shares) do
+                    local b = d.byGroup[g] or {}
+                    d.byGroup[g] = b
+                    for _, f in ipairs(FIELDS) do
+                        b[f] = (b[f] or 0) + (d[f] or 0) * frac
+                    end
+                end
+            end
+        end
+    end
     local group = ReadyCheckShameDB.tonight.group
     if group then
         for name in pairs(ReadyCheckShameDB.tonight.players) do
@@ -281,11 +332,13 @@ local function EnsurePlayer(name)
     if not d.totalResponseTime then d.totalResponseTime = 0 end
     if not d.timeWasted then d.timeWasted = 0 end
     if not d.responseCount then d.responseCount = 0 end
-    -- Tag player with current group
+    -- Tag player with current group and ensure its stat bucket
     local group = ReadyCheckShameDB.tonight.group
     if group then
         if not d.groups then d.groups = {} end
         d.groups[group] = true
+        if not d.byGroup then d.byGroup = {} end
+        if not d.byGroup[group] then d.byGroup[group] = EmptyStats() end
     end
     -- Tonight
     if not ReadyCheckShameDB.tonight.players[name] then
@@ -295,8 +348,15 @@ end
 
 local function IncrementStat(name, field, amount)
     amount = amount or 1
-    ReadyCheckShameDB.alltime[name][field] = ReadyCheckShameDB.alltime[name][field] + amount
+    local d = ReadyCheckShameDB.alltime[name]
+    d[field] = d[field] + amount
     ReadyCheckShameDB.tonight.players[name][field] = ReadyCheckShameDB.tonight.players[name][field] + amount
+    -- Mirror into tonight's group bucket so per-group views show numbers
+    -- earned WITH that group, not the player's all-group totals
+    local group = ReadyCheckShameDB.tonight.group
+    if group and d.byGroup and d.byGroup[group] then
+        d.byGroup[group][field] = (d.byGroup[group][field] or 0) + amount
+    end
 end
 
 local respondedThisCheck = {}
@@ -329,13 +389,15 @@ local function FinalizeSession(pullTime)
         if problem.worst ~= "slow" then
             EnsurePlayer(name)
             local weight = SEVERITY[problem.worst] or 1
-            -- Use chat ready time if available, otherwise full session
+            -- Charge chat-ready players only until they typed "r"; charging
+            -- the full first-check-to-pull span billed the raid leader's
+            -- dawdle time to players who were long since ready
             local readyAt = chatReadyMembers[name]
             local personTime
             if readyAt then
-                -- They typed "r" readyAt seconds after check ended
-                -- Total time from session start = lastCheckDuration + readyAt (approx)
-                personTime = totalSessionTime  -- simplify: charge for full session
+                -- readyAt is seconds after the check ended, so their real
+                -- delay from session start is roughly check + readyAt
+                personTime = math.min(totalSessionTime, lastCheckDuration + readyAt)
             else
                 personTime = totalSessionTime
             end
@@ -956,7 +1018,7 @@ local function ShowLeaderboard(toChat, which)
             wastedStr = string.format("%.0fs", e.timeWasted)
         end
         if toChat then
-            out(string.format("%s: %d seen, %d not ready, %d AFK, avg %s, %s wasted, %.0f%% fail",
+            out(string.format("%s: %d seen, %d not ready, %d AFK, avg %s, %s raid-time, %.0f%% fail",
                 e.name, e.seen, e.notready, e.afk, avgStr, wastedStr, rate))
         else
             local color
@@ -969,7 +1031,7 @@ local function ShowLeaderboard(toChat, which)
             else
                 color = "|cffffff00"
             end
-            Print(string.format("  %s%s|r: %d seen, %d NR, %d AFK, avg %s, %s wasted, %.0f%% fail",
+            Print(string.format("  %s%s|r: %d seen, %d NR, %d AFK, avg %s, %s raid-time, %.0f%% fail",
                 color, e.name, e.seen, e.notready, e.afk, avgStr, wastedStr, rate))
         end
     end
@@ -1028,14 +1090,14 @@ local function ShowTrend(toChat)
             label = label .. " (" .. h.group .. ")"
         end
         if toChat then
-            out(string.format("%s: %d checks, %.0f%% perfect, %.1fs avg, %s wasted",
+            out(string.format("%s: %d checks, %.0f%% perfect, %.1fs avg, %s raid-time",
                 label, h.checks, h.perfectRate, h.avgTime, wastedStr))
         else
             local color
             if h.perfectRate >= 90 then color = "|cff00ff00"
             elseif h.perfectRate >= 70 then color = "|cffffff00"
             else color = "|cffff0000" end
-            Print(string.format("  %s%s: %d checks, %.0f%% perfect, %.1fs avg, %s wasted|r",
+            Print(string.format("  %s%s: %d checks, %.0f%% perfect, %.1fs avg, %s raid-time|r",
                 color, label, h.checks, h.perfectRate, h.avgTime, wastedStr))
         end
     end

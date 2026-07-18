@@ -3,6 +3,9 @@
 ## 1.2.7
 - Group filter buttons are now ordered by how often you raid with each group, so your usual group comes first
 - When there are more groups than fit on the row, scroll through them with the mouse wheel
+- The "Wasted" column is now "Raid-time" — it always measured everyone's time combined (your delay times the number of people kept waiting), which is why it could reach hours; now the name says so
+- Fixed inflated raid-time: players who typed "r" after a failed check were being charged all the way until the pull, even if the raid leader waited minutes to pull — they're now only charged until they said "r"
+- Group filters now show only what happened with that group — previously a player's full all-time numbers appeared under every group they'd ever raided with, so one night with another group dragged in their whole record. Existing totals are split across groups based on how many nights you've recorded together; new nights are tracked per group exactly
 
 ## 1.2.6
 - Ready for WoW 12.1.0
