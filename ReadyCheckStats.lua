@@ -1293,210 +1293,215 @@ function RunTests()
         ReadyCheckShameDB = { alltime = {}, tonight = { date = Today(), players = {} }, history = {} }
     end
 
-    -- Test 1: FinalizeSession with one AFK in 20-person raid
-    -- All weights are equal (no multipliers); a lone offender is charged the
-    -- full session time × the number of people kept waiting.
-    freshDB()
-    sessionProblems = { ["TestAFK"] = { checks = 1, worst = "afk" } }
-    sessionActive = true
-    sessionStart = GetTime() - 30
-    sessionGroupSize = 20
-    EnsurePlayer("TestAFK")
-    FinalizeSession(GetTime())
-    -- 30s * 19 others = 570
-    assert_eq(570, ReadyCheckShameDB.alltime["TestAFK"].timeWasted, "Lone AFK charged full session")
+    -- The whole body runs under pcall: an error mid-test (or a logout before
+    -- it finishes) must never leave fixture data installed as the live
+    -- SavedVariables -- the restore below runs on every path.
+    local ok, testErr = pcall(function()
+        -- Test 1: FinalizeSession with one AFK in 20-person raid
+        -- All weights are equal (no multipliers); a lone offender is charged the
+        -- full session time × the number of people kept waiting.
+        freshDB()
+        sessionProblems = { ["TestAFK"] = { checks = 1, worst = "afk" } }
+        sessionActive = true
+        sessionStart = GetTime() - 30
+        sessionGroupSize = 20
+        EnsurePlayer("TestAFK")
+        FinalizeSession(GetTime())
+        -- 30s * 19 others = 570
+        assert_eq(570, ReadyCheckShameDB.alltime["TestAFK"].timeWasted, "Lone AFK charged full session")
 
-    -- Test 2: Two AFKs both get full penalty
-    freshDB()
-    sessionProblems = {
-        ["AFK1"] = { checks = 1, worst = "afk" },
-        ["AFK2"] = { checks = 1, worst = "afk" },
-    }
-    sessionActive = true
-    sessionStart = GetTime() - 30
-    sessionGroupSize = 20
-    EnsurePlayer("AFK1")
-    EnsurePlayer("AFK2")
-    EnsurePlayer("GoodGuy")
-    FinalizeSession(GetTime())
-    -- Fair split: two equal offenders share the blame — (30/2)s * 19 = 285 each
-    assert_eq(285, ReadyCheckShameDB.alltime["AFK1"].timeWasted, "AFK1 fair-split share")
-    assert_eq(285, ReadyCheckShameDB.alltime["AFK2"].timeWasted, "AFK2 fair-split share")
-    assert_eq(0, ReadyCheckShameDB.alltime["GoodGuy"].timeWasted, "GoodGuy no penalty")
+        -- Test 2: Two AFKs both get full penalty
+        freshDB()
+        sessionProblems = {
+            ["AFK1"] = { checks = 1, worst = "afk" },
+            ["AFK2"] = { checks = 1, worst = "afk" },
+        }
+        sessionActive = true
+        sessionStart = GetTime() - 30
+        sessionGroupSize = 20
+        EnsurePlayer("AFK1")
+        EnsurePlayer("AFK2")
+        EnsurePlayer("GoodGuy")
+        FinalizeSession(GetTime())
+        -- Fair split: two equal offenders share the blame — (30/2)s * 19 = 285 each
+        assert_eq(285, ReadyCheckShameDB.alltime["AFK1"].timeWasted, "AFK1 fair-split share")
+        assert_eq(285, ReadyCheckShameDB.alltime["AFK2"].timeWasted, "AFK2 fair-split share")
+        assert_eq(0, ReadyCheckShameDB.alltime["GoodGuy"].timeWasted, "GoodGuy no penalty")
 
-    -- Test 3: Chat ready — charged full session, same weight as everything else
-    freshDB()
-    sessionProblems = { ["ChatGuy"] = { checks = 1, worst = "chat" } }
-    sessionActive = true
-    sessionStart = GetTime() - 45
-    sessionGroupSize = 20
-    EnsurePlayer("ChatGuy")
-    FinalizeSession(GetTime())
-    -- 45s * 19 = 855
-    assert_eq(855, ReadyCheckShameDB.alltime["ChatGuy"].timeWasted, "Chat-ready charged full session")
+        -- Test 3: Chat ready — charged full session, same weight as everything else
+        freshDB()
+        sessionProblems = { ["ChatGuy"] = { checks = 1, worst = "chat" } }
+        sessionActive = true
+        sessionStart = GetTime() - 45
+        sessionGroupSize = 20
+        EnsurePlayer("ChatGuy")
+        FinalizeSession(GetTime())
+        -- 45s * 19 = 855
+        assert_eq(855, ReadyCheckShameDB.alltime["ChatGuy"].timeWasted, "Chat-ready charged full session")
 
-    -- Test 4: Slow responders are charged per-check (in READY_CHECK_FINISHED),
-    -- not at session finalize — FinalizeSession must skip them entirely.
-    freshDB()
-    sessionProblems = { ["SlowGuy"] = { checks = 1, worst = "slow" } }
-    sessionActive = true
-    sessionStart = GetTime() - 15
-    sessionGroupSize = 20
-    EnsurePlayer("SlowGuy")
-    FinalizeSession(GetTime())
-    assert_eq(0, ReadyCheckShameDB.alltime["SlowGuy"].timeWasted, "Slow skipped at finalize")
+        -- Test 4: Slow responders are charged per-check (in READY_CHECK_FINISHED),
+        -- not at session finalize — FinalizeSession must skip them entirely.
+        freshDB()
+        sessionProblems = { ["SlowGuy"] = { checks = 1, worst = "slow" } }
+        sessionActive = true
+        sessionStart = GetTime() - 15
+        sessionGroupSize = 20
+        EnsurePlayer("SlowGuy")
+        FinalizeSession(GetTime())
+        assert_eq(0, ReadyCheckShameDB.alltime["SlowGuy"].timeWasted, "Slow skipped at finalize")
 
-    -- Test 5: NotReady — charged full session, same weight as everything else
-    freshDB()
-    sessionProblems = { ["Troll"] = { checks = 1, worst = "notready" } }
-    sessionActive = true
-    sessionStart = GetTime() - 30
-    sessionGroupSize = 20
-    EnsurePlayer("Troll")
-    FinalizeSession(GetTime())
-    -- 30s * 19 = 570
-    assert_eq(570, ReadyCheckShameDB.alltime["Troll"].timeWasted, "NotReady charged full session")
+        -- Test 5: NotReady — charged full session, same weight as everything else
+        freshDB()
+        sessionProblems = { ["Troll"] = { checks = 1, worst = "notready" } }
+        sessionActive = true
+        sessionStart = GetTime() - 30
+        sessionGroupSize = 20
+        EnsurePlayer("Troll")
+        FinalizeSession(GetTime())
+        -- 30s * 19 = 570
+        assert_eq(570, ReadyCheckShameDB.alltime["Troll"].timeWasted, "NotReady charged full session")
 
-    -- Test 6: Failing multiple checks does NOT multiply the session charge
-    freshDB()
-    sessionProblems = { ["SuperAFK"] = { checks = 3, worst = "afk" } }
-    sessionActive = true
-    sessionStart = GetTime() - 120
-    sessionGroupSize = 20
-    EnsurePlayer("SuperAFK")
-    FinalizeSession(GetTime())
-    -- 120s * 19 = 2280 regardless of checks
-    assert_eq(2280, ReadyCheckShameDB.alltime["SuperAFK"].timeWasted, "Checks don't multiply charge")
+        -- Test 6: Failing multiple checks does NOT multiply the session charge
+        freshDB()
+        sessionProblems = { ["SuperAFK"] = { checks = 3, worst = "afk" } }
+        sessionActive = true
+        sessionStart = GetTime() - 120
+        sessionGroupSize = 20
+        EnsurePlayer("SuperAFK")
+        FinalizeSession(GetTime())
+        -- 120s * 19 = 2280 regardless of checks
+        assert_eq(2280, ReadyCheckShameDB.alltime["SuperAFK"].timeWasted, "Checks don't multiply charge")
 
-    -- Test 7: All severity weights are equal by design (no multipliers)
-    assert_eq(1, SEVERITY["slow"], "slow weight is 1")
-    assert_eq(1, SEVERITY["notready"], "notready weight is 1")
-    assert_eq(1, SEVERITY["chat"], "chat weight is 1")
-    assert_eq(1, SEVERITY["afk"], "afk weight is 1")
+        -- Test 7: All severity weights are equal by design (no multipliers)
+        assert_eq(1, SEVERITY["slow"], "slow weight is 1")
+        assert_eq(1, SEVERITY["notready"], "notready weight is 1")
+        assert_eq(1, SEVERITY["chat"], "chat weight is 1")
+        assert_eq(1, SEVERITY["afk"], "afk weight is 1")
 
-    -- Test 8: Bigger raid = more waste
-    freshDB()
-    sessionProblems = { ["Small"] = { checks = 1, worst = "afk" } }
-    sessionActive = true
-    sessionStart = GetTime() - 30
-    sessionGroupSize = 5
-    EnsurePlayer("Small")
-    FinalizeSession(GetTime())
-    local smallWaste = ReadyCheckShameDB.alltime["Small"].timeWasted
+        -- Test 8: Bigger raid = more waste
+        freshDB()
+        sessionProblems = { ["Small"] = { checks = 1, worst = "afk" } }
+        sessionActive = true
+        sessionStart = GetTime() - 30
+        sessionGroupSize = 5
+        EnsurePlayer("Small")
+        FinalizeSession(GetTime())
+        local smallWaste = ReadyCheckShameDB.alltime["Small"].timeWasted
 
-    freshDB()
-    sessionProblems = { ["Big"] = { checks = 1, worst = "afk" } }
-    sessionActive = true
-    sessionStart = GetTime() - 30
-    sessionGroupSize = 20
-    EnsurePlayer("Big")
-    FinalizeSession(GetTime())
-    local bigWaste = ReadyCheckShameDB.alltime["Big"].timeWasted
+        freshDB()
+        sessionProblems = { ["Big"] = { checks = 1, worst = "afk" } }
+        sessionActive = true
+        sessionStart = GetTime() - 30
+        sessionGroupSize = 20
+        EnsurePlayer("Big")
+        FinalizeSession(GetTime())
+        local bigWaste = ReadyCheckShameDB.alltime["Big"].timeWasted
 
-    assert_eq(120, smallWaste, "5-person raid (30s * 4 others)")
-    assert_eq(570, bigWaste, "20-person raid (30s * 19 others)")
-    assert_gt(bigWaste, smallWaste, "Bigger raid wastes more")
+        assert_eq(120, smallWaste, "5-person raid (30s * 4 others)")
+        assert_eq(570, bigWaste, "20-person raid (30s * 19 others)")
+        assert_gt(bigWaste, smallWaste, "Bigger raid wastes more")
 
-    -- Test 9: Solo group — no crash
-    freshDB()
-    sessionProblems = { ["Solo"] = { checks = 1, worst = "afk" } }
-    sessionActive = true
-    sessionStart = GetTime() - 30
-    sessionGroupSize = 1
-    EnsurePlayer("Solo")
-    FinalizeSession(GetTime())
-    assert_eq(30, ReadyCheckShameDB.alltime["Solo"].timeWasted, "Solo group (30s * 1 floor)")
+        -- Test 9: Solo group — no crash
+        freshDB()
+        sessionProblems = { ["Solo"] = { checks = 1, worst = "afk" } }
+        sessionActive = true
+        sessionStart = GetTime() - 30
+        sessionGroupSize = 1
+        EnsurePlayer("Solo")
+        FinalizeSession(GetTime())
+        assert_eq(30, ReadyCheckShameDB.alltime["Solo"].timeWasted, "Solo group (30s * 1 floor)")
 
-    -- Test 10: Empty session — no crash
-    freshDB()
-    sessionProblems = {}
-    sessionActive = true
-    sessionStart = GetTime() - 60
-    sessionGroupSize = 20
-    FinalizeSession(GetTime())
-    local count = 0
-    for _ in pairs(ReadyCheckShameDB.alltime) do count = count + 1 end
-    assert_eq(0, count, "Empty session no data")
+        -- Test 10: Empty session — no crash
+        freshDB()
+        sessionProblems = {}
+        sessionActive = true
+        sessionStart = GetTime() - 60
+        sessionGroupSize = 20
+        FinalizeSession(GetTime())
+        local count = 0
+        for _ in pairs(ReadyCheckShameDB.alltime) do count = count + 1 end
+        assert_eq(0, count, "Empty session no data")
 
-    -- Test 11: Check count doesn't change the split — two AFKs with different
-    -- check counts still share the session evenly (no multipliers by design)
-    freshDB()
-    sessionProblems = {
-        ["OG"] = { checks = 3, worst = "afk" },
-        ["Late"] = { checks = 1, worst = "afk" },
-    }
-    sessionActive = true
-    sessionStart = GetTime() - 120
-    sessionGroupSize = 20
-    EnsurePlayer("OG")
-    EnsurePlayer("Late")
-    FinalizeSession(GetTime())
-    -- (120/2)s * 19 = 1140 each
-    assert_eq(1140, ReadyCheckShameDB.alltime["OG"].timeWasted, "OG fair-split share")
-    assert_eq(1140, ReadyCheckShameDB.alltime["Late"].timeWasted, "Late fair-split share")
+        -- Test 11: Check count doesn't change the split — two AFKs with different
+        -- check counts still share the session evenly (no multipliers by design)
+        freshDB()
+        sessionProblems = {
+            ["OG"] = { checks = 3, worst = "afk" },
+            ["Late"] = { checks = 1, worst = "afk" },
+        }
+        sessionActive = true
+        sessionStart = GetTime() - 120
+        sessionGroupSize = 20
+        EnsurePlayer("OG")
+        EnsurePlayer("Late")
+        FinalizeSession(GetTime())
+        -- (120/2)s * 19 = 1140 each
+        assert_eq(1140, ReadyCheckShameDB.alltime["OG"].timeWasted, "OG fair-split share")
+        assert_eq(1140, ReadyCheckShameDB.alltime["Late"].timeWasted, "Late fair-split share")
 
-    -- Test 12: Multiple sessions accumulate
-    freshDB()
-    sessionProblems = { ["Repeat"] = { checks = 1, worst = "afk" } }
-    sessionActive = true
-    sessionStart = GetTime() - 30
-    sessionGroupSize = 20
-    EnsurePlayer("Repeat")
-    FinalizeSession(GetTime())
-    local after1 = ReadyCheckShameDB.alltime["Repeat"].timeWasted
+        -- Test 12: Multiple sessions accumulate
+        freshDB()
+        sessionProblems = { ["Repeat"] = { checks = 1, worst = "afk" } }
+        sessionActive = true
+        sessionStart = GetTime() - 30
+        sessionGroupSize = 20
+        EnsurePlayer("Repeat")
+        FinalizeSession(GetTime())
+        local after1 = ReadyCheckShameDB.alltime["Repeat"].timeWasted
 
-    sessionProblems = { ["Repeat"] = { checks = 1, worst = "afk" } }
-    sessionActive = true
-    sessionStart = GetTime() - 30
-    sessionGroupSize = 20
-    FinalizeSession(GetTime())
-    local after2 = ReadyCheckShameDB.alltime["Repeat"].timeWasted
+        sessionProblems = { ["Repeat"] = { checks = 1, worst = "afk" } }
+        sessionActive = true
+        sessionStart = GetTime() - 30
+        sessionGroupSize = 20
+        FinalizeSession(GetTime())
+        local after2 = ReadyCheckShameDB.alltime["Repeat"].timeWasted
 
-    assert_eq(570, after1, "First session (30s * 19)")
-    assert_eq(1140, after2, "Accumulated across sessions")
+        assert_eq(570, after1, "First session (30s * 19)")
+        assert_eq(1140, after2, "Accumulated across sessions")
 
-    -- Test 13: Not Ready clicker must type "r" before the all-clear (1.2.4)
-    freshDB()
-    sessionProblems = {}
-    sessionActive = true
-    sessionStart = GetTime() - 5
-    sessionGroupSize = 5
-    activeCheck = true
-    checkStartTime = GetTime() - 10
-    groupSize = 5
-    pendingMembers = {}
-    responseTimes = {}
-    chatReadyMembers = {}
-    notReadyThisCheck = { ["NotReadyBob"] = true }
-    preReadied = {}
-    local handler = frame:GetScript("OnEvent")
-    handler(frame, "READY_CHECK_FINISHED")
-    assert_eq(true, waitingOnPlayers["NotReadyBob"], "NotReady clicker still waited on after check")
-    assert_eq("notready", sessionProblems["NotReadyBob"] and sessionProblems["NotReadyBob"].worst, "NotReady session problem recorded")
-    -- Their "r" (with realm suffix) clears them and triggers the all-clear
-    handler(frame, "CHAT_MSG_RAID", "r", "NotReadyBob-SomeRealm")
-    assert_eq(nil, waitingOnPlayers["NotReadyBob"], "Chat 'r' clears NotReady clicker")
+        -- Test 13: Not Ready clicker must type "r" before the all-clear (1.2.4)
+        freshDB()
+        sessionProblems = {}
+        sessionActive = true
+        sessionStart = GetTime() - 5
+        sessionGroupSize = 5
+        activeCheck = true
+        checkStartTime = GetTime() - 10
+        groupSize = 5
+        pendingMembers = {}
+        responseTimes = {}
+        chatReadyMembers = {}
+        notReadyThisCheck = { ["NotReadyBob"] = true }
+        preReadied = {}
+        local handler = frame:GetScript("OnEvent")
+        handler(frame, "READY_CHECK_FINISHED")
+        assert_eq(true, waitingOnPlayers["NotReadyBob"], "NotReady clicker still waited on after check")
+        assert_eq("notready", sessionProblems["NotReadyBob"] and sessionProblems["NotReadyBob"].worst, "NotReady session problem recorded")
+        -- Their "r" (with realm suffix) clears them and triggers the all-clear
+        handler(frame, "CHAT_MSG_RAID", "r", "NotReadyBob-SomeRealm")
+        assert_eq(nil, waitingOnPlayers["NotReadyBob"], "Chat 'r' clears NotReady clicker")
 
-    -- Test 14: typing "r" while the check is still running counts (1.2.5)
-    freshDB()
-    sessionProblems = {}
-    sessionActive = true
-    sessionStart = GetTime() - 5
-    sessionGroupSize = 5
-    activeCheck = true
-    waitingForPull = false
-    checkStartTime = GetTime() - 10
-    groupSize = 5
-    pendingMembers = {}
-    responseTimes = {}
-    chatReadyMembers = {}
-    notReadyThisCheck = { ["EagerEddie"] = true }
-    preReadied = {}
-    handler(frame, "CHAT_MSG_RAID", "r", "EagerEddie-SomeRealm")
-    assert_eq(true, preReadied["EagerEddie"], "Mid-check 'r' recorded")
-    handler(frame, "READY_CHECK_FINISHED")
-    assert_eq(nil, waitingOnPlayers["EagerEddie"], "Pre-readied player not waited on")
-    assert_eq(0, chatReadyMembers["EagerEddie"], "Pre-readied counted as chat-ready at 0s")
+        -- Test 14: typing "r" while the check is still running counts (1.2.5)
+        freshDB()
+        sessionProblems = {}
+        sessionActive = true
+        sessionStart = GetTime() - 5
+        sessionGroupSize = 5
+        activeCheck = true
+        waitingForPull = false
+        checkStartTime = GetTime() - 10
+        groupSize = 5
+        pendingMembers = {}
+        responseTimes = {}
+        chatReadyMembers = {}
+        notReadyThisCheck = { ["EagerEddie"] = true }
+        preReadied = {}
+        handler(frame, "CHAT_MSG_RAID", "r", "EagerEddie-SomeRealm")
+        assert_eq(true, preReadied["EagerEddie"], "Mid-check 'r' recorded")
+        handler(frame, "READY_CHECK_FINISHED")
+        assert_eq(nil, waitingOnPlayers["EagerEddie"], "Pre-readied player not waited on")
+        assert_eq(0, chatReadyMembers["EagerEddie"], "Pre-readied counted as chat-ready at 0s")
+    end)
 
     -- Restore real data
     ReadyCheckShameDB = savedDB
@@ -1518,5 +1523,8 @@ function RunTests()
     lastCheckDuration = savedLastDuration
     lastGroupSize = savedLastGroupSize
 
+    if not ok then
+        Print("--- Tests ERRORED: " .. tostring(testErr) .. " ---")
+    end
     Print(string.format("--- %d passed, %d failed ---", passed, failed))
 end
